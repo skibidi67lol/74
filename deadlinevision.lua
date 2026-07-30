@@ -413,34 +413,58 @@ return {
         --==============================================================
         -- TAB: VISUALS  (world flags; ESP sections come from the suite)
         --==============================================================
+        -- master switch + empty keybind, one per feature section
+        local function feature(sec, o)
+            local guard, el = false, nil
+            local function commit(v)
+                v = v and true or false
+                o.set(v)
+                pcall(apply)
+                note(o.Title, v and "Enabled" or "Disabled")
+                guard = true
+                if el then pcall(function() el:UpdateState(v) end) end
+                guard = false
+            end
+            el = sec:Toggle({ Name = "Enabled", Default = false,
+                Callback = function(v) if not guard then commit(v) end end },
+                ctx.flag(o.Flag))
+            if o.Desc then sec:SubLabel({ Text = o.Desc }) end
+            ctx.keybind(sec, { Name = "Keybind", Flag = ctx.flag(o.Flag .. "_KB"),
+                Toggle = function() commit(not o.get()) end })
+        end
+
+        --==============================================================
+        -- TAB: VISUALS  (world flags; ESP sections come from the suite)
+        --==============================================================
         local V = ctx.tabs.Visuals
 
         local w1 = V:Section({ Side = "Right" })
-        w1:Header({ Name = "World" })
-        w1:SubLabel({ Text = "client-side state flags, the server never reads them" })
-        bool(w1, "See Through Smoke", { Flag = "WD_Smoke", Default = false,
+        w1:Header({ Name = "See Through Smoke" })
+        feature(w1, { Title = "See Through Smoke", Flag = "WD_Smoke",
+            get = function() return CFG.SeeThroughSmoke end,
             set = function(v) CFG.SeeThroughSmoke = v end,
             Desc = "smoke opacity 0 = enemy smokes stop working on you" })
-        bool(w1, "Disable Weather", { Flag = "WD_Weather", Default = false,
+
+        local w2 = V:Section({ Side = "Right" })
+        w2:Header({ Name = "Disable Weather" })
+        feature(w2, { Title = "Disable Weather", Flag = "WD_Weather",
+            get = function() return CFG.DisableWeather end,
             set = function(v) CFG.DisableWeather = v end,
             Desc = "flat bright lighting instead of night, fog and rain" })
-        bool(w1, "No Lens Flare", { Flag = "WD_Flare", Default = false,
+
+        local w3 = V:Section({ Side = "Right" })
+        w3:Header({ Name = "No Lens Flare" })
+        feature(w3, { Title = "No Lens Flare", Flag = "WD_Flare",
+            get = function() return CFG.NoLensFlare end,
             set = function(v) CFG.NoLensFlare = v end,
             Desc = "no blinding from enemy flashlights and lasers" })
-        bool(w1, "Bright NVG", { Flag = "WD_NVG", Default = false,
+
+        local w4 = V:Section({ Side = "Right" })
+        w4:Header({ Name = "Bright NVG" })
+        feature(w4, { Title = "Bright NVG", Flag = "WD_NVG",
+            get = function() return CFG.BrightNVG end,
             set = function(v) CFG.BrightNVG = v end,
             Desc = "white night vision instead of green" })
-
-        w1:Divider()
-        w1:Header({ Name = "Debug Draw" })
-        bool(w1, "Show Projectiles", { Flag = "WD_Proj", Default = false,
-            set = function(v) CFG.ShowProjectiles = v end,
-            Desc = "all bullet paths, incoming ones too" })
-        bool(w1, "Show Shot Vector", { Flag = "WD_ShotVec", Default = false,
-            set = function(v) CFG.ShowShotVector = v end,
-            Desc = "green = barrel, red = real direction with spread" })
-        bool(w1, "Show Hitboxes", { Flag = "WD_Gizmos", Default = false,
-            set = function(v) CFG.ShowCharGizmos = v end })
 
         --==============================================================
         -- TAB: MISC
@@ -448,34 +472,75 @@ return {
         local X = ctx.tabs.Misc
 
         local x1 = X:Section({ Side = "Left" })
-        x1:Header({ Name = "Combat" })
-        bool(x1, "No Suppression", { Flag = "MS_NoSupp", Default = false,
+        x1:Header({ Name = "No Suppression" })
+        feature(x1, { Title = "No Suppression", Flag = "MS_NoSupp",
+            get = function() return CFG.NoSuppression end,
             set = function(v) CFG.NoSuppression = v end,
             Desc = "no blur or aim shake from nearby bullets" })
-        bool(x1, "Steady Aim", { Flag = "MS_Steady", Default = false,
+
+        local x2 = X:Section({ Side = "Left" })
+        x2:Header({ Name = "Steady Aim" })
+        feature(x2, { Title = "Steady Aim", Flag = "MS_Steady",
+            get = function() return CFG.SteadyAim end,
             set = function(v) CFG.SteadyAim = v end,
             Desc = "zero camera recoil and fatigue shake" })
-        bool(x1, "Infinite Stamina", { Flag = "MS_InfStam", Default = false,
+
+        local x3 = X:Section({ Side = "Left" })
+        x3:Header({ Name = "Infinite Stamina" })
+        feature(x3, { Title = "Infinite Stamina", Flag = "MS_InfStam",
+            get = function() return CFG.InfStamina end,
             set = function(v) CFG.InfStamina = v end,
             Desc = "zeroes every stamina drain and raises regen" })
-        bool(x1, "Aim In Bushes", { Flag = "MS_Bushes", Default = false,
+
+        local x4 = X:Section({ Side = "Left" })
+        x4:Header({ Name = "Aim In Bushes" })
+        feature(x4, { Title = "Aim In Bushes", Flag = "MS_Bushes",
+            get = function() return CFG.AimInBushes end,
             set = function(v) CFG.AimInBushes = v end,
             Desc = "the bush aim block is client-only" })
 
-        local x2 = X:Section({ Side = "Right" })
-        x2:Header({ Name = "Sound" })
-        bool(x2, "Instant Sound", { Flag = "MS_Sound", Default = false,
+        local x5 = X:Section({ Side = "Right" })
+        x5:Header({ Name = "Instant Sound" })
+        feature(x5, { Title = "Instant Sound", Flag = "MS_Sound",
+            get = function() return CFG.InstantSound end,
             set = function(v) CFG.InstantSound = v end,
             Desc = "removes the distance delay on gunshots" })
-        slider(x2, { Name = "Sound Speed", Flag = "MS_SoundSpd", Default = 20000,
+        slider(x5, { Name = "Sound Speed", Flag = "MS_SoundSpd", Default = 20000,
             Min = 1120, Max = 40000,
             Callback = function(v) CFG.SoundSpeed = v end,
             Desc = "game default is 1120" })
 
-        x2:Divider()
-        x2:Header({ Name = "Protection" })
-        bool(x2, "No Drown", { Flag = "MS_NoDrown", Default = false,
+        local x6 = X:Section({ Side = "Right" })
+        x6:Header({ Name = "No Drown" })
+        feature(x6, { Title = "No Drown", Flag = "MS_NoDrown",
+            get = function() return CFG.NoDrown end,
             set = function(v) CFG.NoDrown = v end,
             Desc = "keeps the breath timer topped up" })
+
+        --==============================================================
+        -- TAB: DEBUG  (created by the loader)
+        --==============================================================
+        local D = ctx.tabs.Debug
+
+        local d1 = D:Section({ Side = "Left" })
+        d1:Header({ Name = "Show Projectiles" })
+        feature(d1, { Title = "Show Projectiles", Flag = "WD_Proj",
+            get = function() return CFG.ShowProjectiles end,
+            set = function(v) CFG.ShowProjectiles = v end,
+            Desc = "all bullet paths, incoming ones too" })
+
+        local d2 = D:Section({ Side = "Left" })
+        d2:Header({ Name = "Show Shot Vector" })
+        feature(d2, { Title = "Show Shot Vector", Flag = "WD_ShotVec",
+            get = function() return CFG.ShowShotVector end,
+            set = function(v) CFG.ShowShotVector = v end,
+            Desc = "green = barrel, red = real direction with spread" })
+
+        local d3 = D:Section({ Side = "Left" })
+        d3:Header({ Name = "Show Hitboxes" })
+        feature(d3, { Title = "Show Hitboxes", Flag = "WD_Gizmos",
+            get = function() return CFG.ShowCharGizmos end,
+            set = function(v) CFG.ShowCharGizmos = v end,
+            Desc = "character collision cylinders" })
     end,
 }
