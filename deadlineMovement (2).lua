@@ -2478,9 +2478,7 @@ return {
         bool(s2, "Collide With Walls", { Flag = "MV_FlyCollide", Default = false,
             set = function(v) CFG.FlyCollide = v end,
             Desc = "off = pass through geometry (more stable)" })
-        bool(s2, "Free Gun", { Flag = "MV_FreeGun", Default = false,
-            set = function(v) CFG.FreeGun = v end,
-            Desc = "keeps the weapon in hand while flying" })
+        s2:SubLabel({ Text = "enable Free Gun in the Gun Mods tab to keep your weapon" })
 
         ---------------------------------------------------------------- NoClip
         local s3 = T:Section({ Side = "Left" })
@@ -2555,38 +2553,92 @@ return {
             Min = 2, Max = 20,
             Callback = function(v) CFG.DesyncHoldTicks = v end })
 
-        ---------------------------------------------------------------- Passive
+        ------------------------------------------------ Bhop (own section)
         local s7 = T:Section({ Side = "Right" })
-        s7:Header({ Name = "Passive" })
-        bool(s7, "Infinite Stamina", { Flag = "MV_InfStam", Default = false,
-            set = function(v) CFG.InfStamina = v end })
-        bool(s7, "No Landing Penalty", { Flag = "MV_NoLandPen", Default = false,
-            set = function(v) CFG.NoLandingPenalty = v end })
-        bool(s7, "Instant Vault", { Flag = "MV_InstVault", Default = false,
-            set = function(v) CFG.InstantVault = v end })
-        bool(s7, "Bhop", { Flag = "MV_Bhop", Default = false,
-            set = function(v) CFG.Bhop = v end })
-        bool(s7, "Anti Drown", { Flag = "MV_AntiDrown", Default = false,
+        s7:Header({ Name = "Bhop" })
+        feature(s7, { Title = "Bhop", Flag = "MV_Bhop",
+            get = function() return CFG.Bhop end,
+            set = function(v) CFG.Bhop = v end,
+            Desc = "auto jump while held" })
+
+        ------------------------------------- Infinite Stamina (own section)
+        local s8 = T:Section({ Side = "Right" })
+        s8:Header({ Name = "Infinite Stamina" })
+        feature(s8, { Title = "Infinite Stamina", Flag = "MV_InfStam",
+            get = function() return CFG.InfStamina end,
+            set = function(v) CFG.InfStamina = v end,
+            Desc = "stamina lives only in the client controller" })
+
+        ----------------------------------- No Landing Penalty (own section)
+        local s9 = T:Section({ Side = "Right" })
+        s9:Header({ Name = "No Landing Penalty" })
+        feature(s9, { Title = "No Landing Penalty", Flag = "MV_NoLandPen",
+            get = function() return CFG.NoLandingPenalty end,
+            set = function(v) CFG.NoLandingPenalty = v end,
+            Desc = "removes the slowdown after landing" })
+
+        ---------------------------------------- Instant Vault (own section)
+        local s10 = T:Section({ Side = "Right" })
+        s10:Header({ Name = "Instant Vault" })
+        feature(s10, { Title = "Instant Vault", Flag = "MV_InstVault",
+            get = function() return CFG.InstantVault end,
+            set = function(v) CFG.InstantVault = v end,
+            Desc = "removes the delay when climbing over obstacles" })
+
+        ------------------------------------------- Anti Drown (own section)
+        local s11 = T:Section({ Side = "Right" })
+        s11:Header({ Name = "Anti Drown" })
+        feature(s11, { Title = "Anti Drown", Flag = "MV_AntiDrown",
+            get = function() return CFG.AntiDrown end,
             set = function(v) CFG.AntiDrown = v end,
             Desc = "drowning is the only death the client reports itself" })
-        bool(s7, "Anti Votekick", { Flag = "MV_AntiVK", Default = false,
+
+        ---------------------------------------- Anti Votekick (own section)
+        local s12 = T:Section({ Side = "Right" })
+        s12:Header({ Name = "Anti Votekick" })
+        feature(s12, { Title = "Anti Votekick", Flag = "MV_AntiVK",
+            get = function() return CFG.AntiVotekick end,
             set = function(v) CFG.AntiVotekick = v end,
             Desc = "auto-votes no, warns and panics if you are the target" })
+        bool(s12, "Auto Vote No", { Flag = "MV_VKAutoNo", Default = true,
+            set = function(v) CFG.VotekickAutoNo = v end })
 
-        ---------------------------------------------------------------- Debug
-        local s8 = T:Section({ Side = "Right" })
-        s8:Header({ Name = "Debug" })
-        bool(s8, "Log Death Reason", { Flag = "MV_LogDeath", Default = true,
+        --==============================================================
+        -- TAB: GUN MODS  (movement's contribution)
+        --==============================================================
+        local G = ctx.tabs.GunMods
+
+        local g1 = G:Section({ Side = "Left" })
+        g1:Header({ Name = "Free Gun" })
+        feature(g1, { Title = "Free Gun", Flag = "MV_FreeGun",
+            get = function() return CFG.FreeGun end,
+            set = function(v) CFG.FreeGun = v end,
+            Desc = "restores the weapon whenever the game removes it\nrequired together with Fly" })
+
+        --==============================================================
+        -- TAB: DEBUG  (created by the loader)
+        --==============================================================
+        local D = ctx.tabs.Debug
+
+        local d1 = D:Section({ Side = "Left" })
+        d1:Header({ Name = "Death Reason" })
+        bool(d1, "Log Death Reason", { Flag = "MV_LogDeath", Default = true,
             set = function(v) CFG.LogDeathReason = v end,
             Desc = "prints the server death type: airtime_timeout, took_damage, ..." })
-        s8:Button({ Name = "Print Status", Callback = function()
-            pcall(print_status); note("Movement", "status -> console")
-        end }, ctx.flag("MV_BtnStatus"))
-        s8:Button({ Name = "Print Debug", Callback = function()
-            pcall(DLM.debug); note("Movement", "debug -> console")
-        end }, ctx.flag("MV_BtnDebug"))
-        s8:Button({ Name = "Last Death Reason", Callback = function()
+        d1:Button({ Name = "Last Death Reason", Callback = function()
             note("Last Death", tostring(lastDeathType))
         end }, ctx.flag("MV_BtnDeath"))
+
+        local d2 = D:Section({ Side = "Left" })
+        d2:Header({ Name = "Movement State" })
+        d2:Button({ Name = "Print Status", Callback = function()
+            pcall(print_status); note("Movement", "status -> console")
+        end }, ctx.flag("MV_BtnStatus"))
+        d2:Button({ Name = "Print Debug", Callback = function()
+            pcall(DLM.debug); note("Movement", "debug -> console")
+        end }, ctx.flag("MV_BtnDebug"))
+        d2:Button({ Name = "Reset Packet Counters", Callback = function()
+            pcall(DLM.reset_counters); note("Movement", "counters reset")
+        end }, ctx.flag("MV_BtnReset"))
     end,
 }
