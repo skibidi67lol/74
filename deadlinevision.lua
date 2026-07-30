@@ -478,7 +478,7 @@ return {
             set = function(v) CFG.NoSuppression = v end,
             Desc = "no blur or aim shake from nearby bullets" })
 
-        local x2 = X:Section({ Side = "Left" })
+        local x2 = X:Section({ Side = "Right" })
         x2:Header({ Name = "Steady Aim" })
         feature(x2, { Title = "Steady Aim", Flag = "MS_Steady",
             get = function() return CFG.SteadyAim end,
@@ -492,14 +492,14 @@ return {
             set = function(v) CFG.InfStamina = v end,
             Desc = "zeroes every stamina drain and raises regen" })
 
-        local x4 = X:Section({ Side = "Left" })
+        local x4 = X:Section({ Side = "Right" })
         x4:Header({ Name = "Aim In Bushes" })
         feature(x4, { Title = "Aim In Bushes", Flag = "MS_Bushes",
             get = function() return CFG.AimInBushes end,
             set = function(v) CFG.AimInBushes = v end,
             Desc = "the bush aim block is client-only" })
 
-        local x5 = X:Section({ Side = "Right" })
+        local x5 = X:Section({ Side = "Left" })
         x5:Header({ Name = "Instant Sound" })
         feature(x5, { Title = "Instant Sound", Flag = "MS_Sound",
             get = function() return CFG.InstantSound end,
@@ -522,7 +522,7 @@ return {
         --==============================================================
         local D = ctx.tabs.Debug
 
-        local d1 = D:Section({ Side = "Left" })
+        local d1 = D:Section({ Side = "Right" })
         d1:Header({ Name = "Show Projectiles" })
         feature(d1, { Title = "Show Projectiles", Flag = "WD_Proj",
             get = function() return CFG.ShowProjectiles end,
@@ -536,7 +536,7 @@ return {
             set = function(v) CFG.ShowShotVector = v end,
             Desc = "green = barrel, red = real direction with spread" })
 
-        local d3 = D:Section({ Side = "Left" })
+        local d3 = D:Section({ Side = "Right" })
         d3:Header({ Name = "Show Hitboxes" })
         feature(d3, { Title = "Show Hitboxes", Flag = "WD_Gizmos",
             get = function() return CFG.ShowCharGizmos end,
