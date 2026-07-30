@@ -129,9 +129,15 @@ pcall(function()
 end)
 
 local function fs_filter(self, first)
-    -- приманка loading_gui: сырой newproxy -> typeof == "userdata"
-    -- (легитимные remotes так не шлют: у них buffer/table/Vector3/Instance)
-    if typeof(first) == "userdata" then
+    --[[
+        ВАЖНО: здесь НЕЛЬЗЯ вызывать typeof().
+        В Luau typeof уважает метаметод __type, а у приманки loading_gui он
+        определён (loading_gui:200) и внутри дёргает troll(). То есть прошлая
+        версия фильтра САМА запускала ловушку при каждой проверке.
+        Обычный type() метаметоды не читает и для newproxy честно даёт
+        "userdata" — им и пользуемся.
+    --]]
+    if type(first) == "userdata" then
         return true
     end
     if type(first) == "string" then
@@ -179,6 +185,147 @@ pcall(function()
     end))
     nc_mode = "on"
 end)
+
+----------------------------------------------------------------------
+-- LAYER 2c  — САНКЦИИ loading_gui: чёрный экран, troll и tostring-бомба.
+----------------------------------------------------------------------
+--[[
+    ЭТО И ЕСТЬ ЗАЩИТА, ИЗ-ЗА КОТОРОЙ ЭКРАН ЧЕРНЕЕТ.
+    Скрипт ReplicatedFirst.loading_gui игра nil-parent'ит сразу
+    (script.Parent = nil на первой строке), поэтому в обычном дампе его нет —
+    он лежит только в выгрузке удалённого. Но его корутины живут в рантайме.
+    Что он делает, по строкам оригинала:
+
+      305  spawn(function() Workspace:ClearAllChildren() end)
+           -- удаляет ВЕСЬ мир: карта, персонажи, всё -> ЧЁРНЫЙ ЭКРАН.
+           -- Условие входа (300): (loading_status.Parent or {}).Parent ~= RS,
+           -- рядом рассылка "THE ORGANIZATION HAS FOUND US" во все RemoteEvent.
+
+      43   for _, d in pairs(workspace:GetDescendants()) do
+               Instance.new("BodyVelocity", d).Name = "lolidiot"
+           -- troll(): физика мира ломается, всё разлетается.
+      56   spawn(function() while true do end end)   -- и фриз потока.
+
+      181  function v15.__tostring() ... return (":D"):rep(9000000000) end
+           -- 9 МИЛЛИАРДОВ повторений: мгновенный OOM у любого, кто сделает
+           -- tostring() на приманке. Приманка рассылается через одноразовый
+           -- RemoteEvent КАЖДУЮ СЕКУНДУ (цикл 157-233).
+
+      317  ContentProvider:PreloadAsync({ CoreGui }, cb)
+           -- сканирует CoreGui (где живёт UI экзекутора) и на каждый
+           -- rbxassetid:// докладывает "_cpr <id>".
+
+    Глушим по уникальным константам — тем же способом, что и freeze-детекторы.
+    Заглушив ВНЕШНЮЮ функцию, мы не даём выполниться и её внутренним spawn'ам,
+    поэтому ClearAllChildren недостижим.
+--]]
+local SANCTION_MARKS = {
+    "THE ORGANIZATION HAS FOUND US",  -- reparent-guard + ClearAllChildren
+    "lolidiot",                       -- troll: BodyVelocity на весь мир
+    ":D",                             -- tostring-бомба на 9e9
+    "_cpr ",                          -- скан CoreGui через PreloadAsync
+    "_ls ",                           -- logscan-репорт
+}
+local sanctions = 0
+for _, mark in ipairs(SANCTION_MARKS) do
+    pcall(function()
+        local found = filtergc("function", {
+            Constants      = { mark },
+            IgnoreExecutor = true,
+        }, false)
+        if type(found) ~= "table" then return end
+        for _, fn in ipairs(found) do
+            if type(fn) == "function" then
+                local skip = false
+                if isexecutorclosure then
+                    local okE, ours = pcall(isexecutorclosure, fn)
+                    if okE and ours then skip = true end
+                end
+                if not skip and pcall(hookfunction, fn, NOOP) then
+                    sanctions += 1
+                end
+            end
+        end
+    end)
+end
+
+--[[
+    ВТОРОЙ СЛОЙ ПО ЧЁРНОМУ ЭКРАНУ.
+    Даже если какая-то копия функции уцелеет, сам вызов должен быть безвреден:
+    блокируем Workspace:ClearAllChildren целиком. Игре он не нужен нигде —
+    в основном дампе этого вызова для Workspace нет вообще, только здесь.
+--]]
+local clear_guard = "none"
+pcall(function()
+    local probe = Instance.new("Folder")
+    local base_clear = probe.ClearAllChildren
+    probe:Destroy()
+    if type(base_clear) ~= "function" then return end
+    local ws = workspace
+    local old_clear
+    local function guard(self, ...)
+        if self == ws then
+            return          -- НЕ даём стереть мир
+        end
+        return old_clear(self, ...)
+    end
+    if oth and oth.hook then
+        old_clear = oth.hook(base_clear, guard)
+        clear_guard = "oth.hook"
+    else
+        old_clear = hookfunction(base_clear, newcclosure(guard))
+        clear_guard = "hookfunction"
+    end
+end)
+
+--[[
+    ТРЕТИЙ СЛОЙ: PreloadAsync({CoreGui}).
+    Он и сканирует наш интерфейс, и надолго блокирует поток на загрузке
+    ассетов. Игре предзагрузка CoreGui не нужна — глотаем такие вызовы.
+--]]
+local preload_guard = "none"
+pcall(function()
+    local CP = cloneref and cloneref(game:GetService("ContentProvider"))
+        or game:GetService("ContentProvider")
+    local base_pre = CP.PreloadAsync
+    if type(base_pre) ~= "function" then return end
+    local coreGui = game:GetService("CoreGui")
+    local old_pre
+    local function guard(self, list, cb, ...)
+        if type(list) == "table" then
+            for _, inst in ipairs(list) do
+                if inst == coreGui then
+                    return      -- скан интерфейса не выполняем
+                end
+            end
+        end
+        return old_pre(self, list, cb, ...)
+    end
+    if oth and oth.hook then
+        old_pre = oth.hook(base_pre, guard)
+        preload_guard = "oth.hook"
+    else
+        old_pre = hookfunction(base_pre, newcclosure(guard))
+        preload_guard = "hookfunction"
+    end
+end)
+
+--[[
+    ЧИСТИЛЬЩИК: если troll всё же успел разбросать BodyVelocity "lolidiot",
+    убираем их — иначе мир продолжает разлетаться.
+--]]
+local function sweep_lolidiot()
+    local n = 0
+    pcall(function()
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d.Name == "lolidiot" and d:IsA("BodyMover") then
+                pcall(function() d:Destroy() end)
+                n += 1
+            end
+        end
+    end)
+    return n
+end
 
 ----------------------------------------------------------------------
 -- LAYER 3  — заглушить LogService.MessageOut honeypot (logscan _ls).
@@ -304,11 +451,27 @@ task.spawn(function()
                 :format(extra, logscan_off))
         end
         if rawget(_G, "actor_started") then pcall(function() _G.actor_started = nil end) end
+        -- если troll успел сработать до нас — убираем последствия
+        local swept = sweep_lolidiot()
+        if swept > 0 then
+            log(("sanctions: removed %d 'lolidiot' body movers left by troll()"):format(swept))
+        end
     end
 end)
 
+-- разовая уборка на старте: троллинг мог отработать до запуска обхода
+do
+    local swept = sweep_lolidiot()
+    if swept > 0 then
+        log(("sanctions: cleaned %d 'lolidiot' body movers on load"):format(swept))
+    end
+end
+
 log(("armed | freeze no-op: %d/%d (want 3) | FireServer(dot): %s | namecall(colon): %s | logscan off: %d | 2nd-detect timers: %d | nil LS: %d")
     :format(killed, seen, fs_mode, nc_mode, logscan_off, sec_patched, honeypots))
+log(("sanctions killed: %d | ClearAllChildren guard: %s | PreloadAsync guard: %s")
+    :format(sanctions, clear_guard, preload_guard))
+log("blocked: black-screen (Workspace:ClearAllChildren) / troll (BodyVelocity spam + freeze) / tostring bomb (9e9) / CoreGui scan")
 log("2nd-detect neutralized: PlayerGui-scan / dirty_properties / rpm / actor_started")
 if sec_patched == 0 then
     log("note: 2nd-detect timers = 0 is EXPECTED in lobby / while dead - the " ..
