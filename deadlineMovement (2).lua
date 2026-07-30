@@ -2462,7 +2462,7 @@ return {
             Callback = function(v) CFG.BurstOffTime = v / 1000 end })
 
         ---------------------------------------------------------------- Fly
-        local s2 = T:Section({ Side = "Left" })
+        local s2 = T:Section({ Side = "Right" })
         s2:Header({ Name = "Fly" })
         feature(s2, { Title = "Fly", Flag = "MV_Fly",
             get = function() return CFG.Fly end,
@@ -2517,7 +2517,7 @@ return {
             Desc = "raises the server speed limit from 14 to 25" })
 
         ---------------------------------------------------------------- No Fall
-        local s5 = T:Section({ Side = "Right" })
+        local s5 = T:Section({ Side = "Left" })
         s5:Header({ Name = "No Fall" })
         feature(s5, { Title = "No Fall", Flag = "MV_NoFall",
             get = function() return CFG.NoFall end,
@@ -2554,7 +2554,7 @@ return {
             Callback = function(v) CFG.DesyncHoldTicks = v end })
 
         ------------------------------------------------ Bhop (own section)
-        local s7 = T:Section({ Side = "Right" })
+        local s7 = T:Section({ Side = "Left" })
         s7:Header({ Name = "Bhop" })
         feature(s7, { Title = "Bhop", Flag = "MV_Bhop",
             get = function() return CFG.Bhop end,
@@ -2570,7 +2570,7 @@ return {
             Desc = "stamina lives only in the client controller" })
 
         ----------------------------------- No Landing Penalty (own section)
-        local s9 = T:Section({ Side = "Right" })
+        local s9 = T:Section({ Side = "Left" })
         s9:Header({ Name = "No Landing Penalty" })
         feature(s9, { Title = "No Landing Penalty", Flag = "MV_NoLandPen",
             get = function() return CFG.NoLandingPenalty end,
@@ -2586,7 +2586,7 @@ return {
             Desc = "removes the delay when climbing over obstacles" })
 
         ------------------------------------------- Anti Drown (own section)
-        local s11 = T:Section({ Side = "Right" })
+        local s11 = T:Section({ Side = "Left" })
         s11:Header({ Name = "Anti Drown" })
         feature(s11, { Title = "Anti Drown", Flag = "MV_AntiDrown",
             get = function() return CFG.AntiDrown end,
@@ -2608,7 +2608,7 @@ return {
         --==============================================================
         local G = ctx.tabs.GunMods
 
-        local g1 = G:Section({ Side = "Left" })
+        local g1 = G:Section({ Side = "Right" })
         g1:Header({ Name = "Free Gun" })
         feature(g1, { Title = "Free Gun", Flag = "MV_FreeGun",
             get = function() return CFG.FreeGun end,
@@ -2629,7 +2629,7 @@ return {
             note("Last Death", tostring(lastDeathType))
         end }, ctx.flag("MV_BtnDeath"))
 
-        local d2 = D:Section({ Side = "Left" })
+        local d2 = D:Section({ Side = "Right" })
         d2:Header({ Name = "Movement State" })
         d2:Button({ Name = "Print Status", Callback = function()
             pcall(print_status); note("Movement", "status -> console")
