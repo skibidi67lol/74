@@ -3392,7 +3392,7 @@ return {
             set = function(v) CFG.NoRecoil = v end,
             Desc = "camera and viewmodel kick only, direction is computed before it" })
 
-        local g2 = G:Section({ Side = "Left" })
+        local g2 = G:Section({ Side = "Right" })
         g2:Header({ Name = "No Spread" })
         feature(g2, { Title = "No Spread", Flag = "GM_NoSpread",
             get = function() return CFG.NoSpread end,
@@ -3413,7 +3413,7 @@ return {
             set = function(v) CFG.FullAuto = v end,
             Desc = "fire mode is switched locally, rpm is never raised" })
 
-        local g5 = G:Section({ Side = "Right" })
+        local g5 = G:Section({ Side = "Left" })
         g5:Header({ Name = "Notes" })
         g5:SubLabel({ Text = "bullet speed, drop and rpm are checked every tick by the anticheat, so they are never touched" })
 
@@ -3422,7 +3422,7 @@ return {
         --==============================================================
         local D = ctx.tabs.Debug
 
-        local d1 = D:Section({ Side = "Right" })
+        local d1 = D:Section({ Side = "Left" })
         d1:Header({ Name = "Silent Aim" })
         d1:Button({ Name = "Print Aim Debug", Callback = function()
             pcall(DL.debug); note("Silent Aim", "debug -> console")
