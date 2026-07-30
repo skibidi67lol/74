@@ -3260,39 +3260,37 @@ return {
             Callback = function(v) CFG.MPMaxTargets = v end,
             Desc = "most expensive setting, lower it if you lag" })
 
-        a3:Divider()
-        a3:Header({ Name = "Force Hit" })
-        feature(a3, { Title = "Force Hit", Flag = "SA_FH",
+        ------------------------------------------ Force Hit (own section)
+        local a3b = A:Section({ Side = "Left" })
+        a3b:Header({ Name = "Force Hit" })
+        feature(a3b, { Title = "Force Hit", Flag = "SA_FH",
             get = function() return CFG.ForceHit end,
             set = function(v) CFG.ForceHit = v end,
             Desc = "client claims the hit; server still validates it" })
-        dropdown(a3, { Name = "Hit Part", Flag = "SA_FHPart",
+        dropdown(a3b, { Name = "Hit Part", Flag = "SA_FHPart",
             Options = { "Head", "Torso" }, Default = "Head",
             Callback = function(v) CFG.ForceHitPart = v end })
+        slider(a3b, { Name = "Delay", Flag = "SA_FHDelay", Default = 0,
+            Min = 0, Max = 120, Suffix = " ms",
+            Callback = function(v) CFG.ForceHitDelay = v / 1000 end,
+            Desc = "wait before claiming, helps the server accept it" })
 
-        a3:Divider()
-        a3:Header({ Name = "Penetration" })
-        bool(a3, "Allow Penetrable", { Flag = "SA_Pen", Default = true,
-            set = function(v) CFG.AllowPenetrable = v end })
-        slider(a3, { Name = "Max Thickness", Flag = "SA_PenMax", Default = 3,
+        ---------------------------------------- Penetration (own section)
+        local a3c = A:Section({ Side = "Left" })
+        a3c:Header({ Name = "Penetration" })
+        feature(a3c, { Title = "Penetration", Flag = "SA_Pen",
+            get = function() return CFG.AllowPenetrable end,
+            set = function(v) CFG.AllowPenetrable = v end,
+            Desc = "allow targets behind thin cover" })
+        slider(a3c, { Name = "Max Thickness", Flag = "SA_PenMax", Default = 3,
             Min = 1, Max = 12, Suffix = " st",
             Callback = function(v) CFG.MaxPenetration = v end })
 
-        local a4 = A:Section({ Side = "Right" })
-        a4:Header({ Name = "Weapon" })
-        a4:SubLabel({ Text = "bullet speed, drop and rpm are checked by the anticheat, not touched" })
-        bool(a4, "No Recoil", { Flag = "SA_NoRecoil", Default = false,
-            set = function(v) CFG.NoRecoil = v end })
-        bool(a4, "No Spread", { Flag = "SA_NoSpread", Default = false,
-            set = function(v) CFG.NoSpread = v end })
-        bool(a4, "No Sway", { Flag = "SA_NoSway", Default = false,
-            set = function(v) CFG.NoSway = v end })
-        bool(a4, "Full Auto", { Flag = "SA_FullAuto", Default = false,
-            set = function(v) CFG.FullAuto = v end })
-
+        --------------------------------------- FOV Circle (own section)
         local a5 = A:Section({ Side = "Right" })
         a5:Header({ Name = "FOV Circle" })
-        bool(a5, "FOV Circle", { Flag = "SA_FovC", Default = false,
+        feature(a5, { Title = "FOV Circle", Flag = "SA_FovC",
+            get = function() return CFG.FovCircle end,
             set = function(v) CFG.FovCircle = v end })
         color(a5, { Name = "Color", Flag = "SA_FovCol", Default = Color3.fromRGB(255, 255, 255),
             Callback = function(c) CFG.FovCircleColor = c end })
@@ -3301,41 +3299,52 @@ return {
         bool(a5, "Filled", { Flag = "SA_FovFill", Default = false,
             set = function(v) CFG.FovCircleFilled = v end })
 
-        a5:Divider()
-        a5:Header({ Name = "Bullet Tracer" })
-        bool(a5, "Shot Tracers", { Flag = "SA_Tracer", Default = false,
+        ------------------------------------ Bullet Tracer (own section)
+        local a5b = A:Section({ Side = "Right" })
+        a5b:Header({ Name = "Bullet Tracer" })
+        feature(a5b, { Title = "Bullet Tracer", Flag = "SA_Tracer",
+            get = function() return CFG.ShotTracers end,
             set = function(v) CFG.ShotTracers = v end,
             Desc = "your shots only" })
-        color(a5, { Name = "Color", Flag = "SA_TracerCol", Default = Color3.fromRGB(120, 200, 255),
+        color(a5b, { Name = "Color", Flag = "SA_TracerCol", Default = Color3.fromRGB(120, 200, 255),
             Callback = function(c) CFG.TracerColor = c end })
-        slider(a5, { Name = "Duration", Flag = "SA_TracerDur", Default = 400,
+        slider(a5b, { Name = "Duration", Flag = "SA_TracerDur", Default = 400,
             Min = 100, Max = 1500, Suffix = " ms",
             Callback = function(v) CFG.TracerDuration = v / 1000 end })
-        slider(a5, { Name = "Thickness", Flag = "SA_TracerThick", Default = 2,
+        slider(a5b, { Name = "Thickness", Flag = "SA_TracerThick", Default = 2,
             Min = 1, Max = 6, Callback = function(v) CFG.TracerThickness = v end })
 
-        a5:Divider()
-        a5:Header({ Name = "Muzzle Line" })
-        bool(a5, "Muzzle Visual", { Flag = "SA_Muzzle", Default = false,
+        -------------------------------------- Muzzle Line (own section)
+        local a5c = A:Section({ Side = "Right" })
+        a5c:Header({ Name = "Muzzle Line" })
+        feature(a5c, { Title = "Muzzle Line", Flag = "SA_Muzzle",
+            get = function() return CFG.MuzzleVisual end,
             set = function(v) CFG.MuzzleVisual = v end,
             Desc = "shows where the muzzle actually points" })
-        color(a5, { Name = "Color", Flag = "SA_MuzzleCol", Default = Color3.fromRGB(255, 170, 60),
+        color(a5c, { Name = "Color", Flag = "SA_MuzzleCol", Default = Color3.fromRGB(255, 170, 60),
             Callback = function(c) CFG.MuzzleLineColor = c end })
 
-        a5:Divider()
-        a5:Header({ Name = "Reticle" })
-        bool(a5, "Aim Reticle", { Flag = "SA_Reticle", Default = false,
+        ------------------------------------------ Reticle (own section)
+        local a5d = A:Section({ Side = "Right" })
+        a5d:Header({ Name = "Reticle" })
+        feature(a5d, { Title = "Reticle", Flag = "SA_Reticle",
+            get = function() return CFG.AimVisuals end,
             set = function(v) CFG.AimVisuals = v end,
             Desc = "marker on the selected target" })
-        dropdown(a5, { Name = "Style", Flag = "SA_ReticleStyle",
+        dropdown(a5d, { Name = "Style", Flag = "SA_ReticleStyle",
             Options = { "Cross", "Dot", "Box", "Diamond" }, Default = "Cross",
             Callback = function(v) CFG.AimVisualStyle = v end })
-        color(a5, { Name = "Color", Flag = "SA_ReticleCol", Default = Color3.fromRGB(255, 80, 80),
+        color(a5d, { Name = "Color", Flag = "SA_ReticleCol", Default = Color3.fromRGB(255, 80, 80),
             Callback = function(c) CFG.AimVisualColor = c end })
+        slider(a5d, { Name = "Scale", Flag = "SA_ReticleScale", Default = 100,
+            Min = 30, Max = 250, Suffix = " %",
+            Callback = function(v) CFG.AimVisualScale = v / 100 end })
 
+        ----------------------------------------- Hit Sound (own section)
         local a6 = A:Section({ Side = "Right" })
         a6:Header({ Name = "Hit Sound" })
-        bool(a6, "Hit Sound", { Flag = "SA_HitSnd", Default = false,
+        feature(a6, { Title = "Hit Sound", Flag = "SA_HitSnd",
+            get = function() return CFG.HitSound end,
             set = function(v) CFG.HitSound = v end })
         slider(a6, { Name = "Volume", Flag = "SA_HitVol", Default = 3.5,
             Min = 0.5, Max = 10, Precision = 1,
@@ -3351,26 +3360,76 @@ return {
         a6:Button({ Name = "Test Sound", Callback = function() pcall(DL.testsound) end },
             ctx.flag("SA_BtnSound"))
 
-        a6:Divider()
-        a6:Header({ Name = "Hit Particles" })
-        bool(a6, "Hit Particles", { Flag = "SA_HitPart", Default = false,
+        ------------------------------------- Hit Particles (own section)
+        local a6b = A:Section({ Side = "Right" })
+        a6b:Header({ Name = "Hit Particles" })
+        feature(a6b, { Title = "Hit Particles", Flag = "SA_HitPart",
+            get = function() return CFG.HitParticles end,
             set = function(v) CFG.HitParticles = v end })
-        dropdown(a6, { Name = "Type", Flag = "SA_HitPartType",
+        dropdown(a6b, { Name = "Type", Flag = "SA_HitPartType",
             Options = { "Wireframe", "Orbs", "Sparks" }, Default = "Sparks",
             Callback = function(v) CFG.HitParticleType = v end })
         slider(a6, { Name = "Count", Flag = "SA_HitPartCount", Default = 8,
             Min = 2, Max = 24,
             Callback = function(v) CFG.HitParticleCount = v end })
-        color(a6, { Name = "Color A", Flag = "SA_HitPartA", Default = Color3.fromRGB(255, 240, 150),
+        slider(a6b, { Name = "Duration", Flag = "SA_HitPartDur", Default = 400,
+            Min = 100, Max = 1200, Suffix = " ms",
+            Callback = function(v) CFG.HitParticleDur = v / 1000 end })
+        color(a6b, { Name = "Color A", Flag = "SA_HitPartA", Default = Color3.fromRGB(255, 240, 150),
             Callback = function(c) CFG.HitParticleColorA = c end })
-        color(a6, { Name = "Color B", Flag = "SA_HitPartB", Default = Color3.fromRGB(255, 120, 40),
+        color(a6b, { Name = "Color B", Flag = "SA_HitPartB", Default = Color3.fromRGB(255, 120, 40),
             Callback = function(c) CFG.HitParticleColorB = c end })
 
-        a6:Divider()
-        a6:Header({ Name = "Debug" })
-        a6:Button({ Name = "Print Aim Debug", Callback = function()
+        --==============================================================
+        -- TAB: GUN MODS
+        --==============================================================
+        local G = ctx.tabs.GunMods
+
+        local g1 = G:Section({ Side = "Left" })
+        g1:Header({ Name = "No Recoil" })
+        feature(g1, { Title = "No Recoil", Flag = "GM_NoRecoil",
+            get = function() return CFG.NoRecoil end,
+            set = function(v) CFG.NoRecoil = v end,
+            Desc = "camera and viewmodel kick only, direction is computed before it" })
+
+        local g2 = G:Section({ Side = "Left" })
+        g2:Header({ Name = "No Spread" })
+        feature(g2, { Title = "No Spread", Flag = "GM_NoSpread",
+            get = function() return CFG.NoSpread end,
+            set = function(v) CFG.NoSpread = v end,
+            Desc = "barrel deviation affects the real bullet direction" })
+
+        local g3 = G:Section({ Side = "Left" })
+        g3:Header({ Name = "No Sway" })
+        feature(g3, { Title = "No Sway", Flag = "GM_NoSway",
+            get = function() return CFG.NoSway end,
+            set = function(v) CFG.NoSway = v end,
+            Desc = "removes the idle aim wobble" })
+
+        local g4 = G:Section({ Side = "Right" })
+        g4:Header({ Name = "Full Auto" })
+        feature(g4, { Title = "Full Auto", Flag = "GM_FullAuto",
+            get = function() return CFG.FullAuto end,
+            set = function(v) CFG.FullAuto = v end,
+            Desc = "fire mode is switched locally, rpm is never raised" })
+
+        local g5 = G:Section({ Side = "Right" })
+        g5:Header({ Name = "Notes" })
+        g5:SubLabel({ Text = "bullet speed, drop and rpm are checked every tick by the anticheat, so they are never touched" })
+
+        --==============================================================
+        -- TAB: DEBUG  (created by the loader)
+        --==============================================================
+        local D = ctx.tabs.Debug
+
+        local d1 = D:Section({ Side = "Right" })
+        d1:Header({ Name = "Silent Aim" })
+        d1:Button({ Name = "Print Aim Debug", Callback = function()
             pcall(DL.debug); note("Silent Aim", "debug -> console")
         end }, ctx.flag("SA_BtnDebug"))
+        d1:Button({ Name = "Test Hit Sound", Callback = function()
+            pcall(DL.testsound)
+        end }, ctx.flag("SA_BtnSound2"))
 
         --==============================================================
         -- TAB: VISUALS  (ESP)
@@ -3396,9 +3455,11 @@ return {
         bool(v1, "Smooth Movement", { Flag = "VZ_Smooth", Default = true,
             set = function(v) CFG.EspSmooth = v end })
 
+        --------------------------------------------- Box (own section)
         local v2 = V:Section({ Side = "Left" })
         v2:Header({ Name = "Box" })
-        bool(v2, "Box", { Flag = "VZ_Box", Default = false,
+        feature(v2, { Title = "Box", Flag = "VZ_Box",
+            get = function() return CFG.EspBox end,
             set = function(v) CFG.EspBox = v end })
         dropdown(v2, { Name = "Style", Flag = "VZ_BoxMode",
             Options = { "Corner", "Full" }, Default = "Corner",
@@ -3409,9 +3470,15 @@ return {
         slider(v2, { Name = "Thickness", Flag = "VZ_BoxThick", Default = 1,
             Min = 1, Max = 4,
             Callback = function(v) CFG.EspBoxThickness = v end })
-        bool(v2, "Head Circle", { Flag = "VZ_HeadCircle", Default = false,
+
+        ------------------------------------- Head Circle (own section)
+        local v2b = V:Section({ Side = "Left" })
+        v2b:Header({ Name = "Head Circle" })
+        feature(v2b, { Title = "Head Circle", Flag = "VZ_HeadCircle",
+            get = function() return CFG.EspHeadCircle end,
             set = function(v) CFG.EspHeadCircle = v end })
 
+        ------------------------------------- Information (own section)
         local v3 = V:Section({ Side = "Left" })
         v3:Header({ Name = "Information" })
         bool(v3, "Name", { Flag = "VZ_Name", Default = false,
@@ -3424,26 +3491,37 @@ return {
         bool(v3, "States", { Flag = "VZ_States", Default = false,
             set = function(v) CFG.EspShowStates = v end,
             Desc = "Aiming / Reloading / Prone / NVG" })
-        bool(v3, "HP Bar", { Flag = "VZ_HP", Default = false,
-            set = function(v) CFG.EspHpBar = v end })
 
+        ----------------------------------------- HP Bar (own section)
+        local v3b = V:Section({ Side = "Left" })
+        v3b:Header({ Name = "HP Bar" })
+        feature(v3b, { Title = "HP Bar", Flag = "VZ_HP",
+            get = function() return CFG.EspHpBar end,
+            set = function(v) CFG.EspHpBar = v end,
+            Desc = "bar on the left of the box, green to red" })
+
+        --------------------------------------- Skeleton (own section)
         local v4 = V:Section({ Side = "Right" })
         v4:Header({ Name = "Skeleton" })
-        bool(v4, "Skeleton", { Flag = "VZ_Skel", Default = false,
-            set = function(v) CFG.EspSkeleton = v end })
+        feature(v4, { Title = "Skeleton", Flag = "VZ_Skel",
+            get = function() return CFG.EspSkeleton end,
+            set = function(v) CFG.EspSkeleton = v end,
+            Desc = "R6 rig, built from the real joints" })
         slider(v4, { Name = "Max Distance", Flag = "VZ_SkelDist", Default = 150,
             Min = 30, Max = 500, Suffix = " st",
             Callback = function(v) CFG.EspSkeletonMaxDist = v end })
 
-        v4:Divider()
-        v4:Header({ Name = "Chams" })
-        bool(v4, "Chams", { Flag = "VZ_Chams", Default = false,
+        ------------------------------------------ Chams (own section)
+        local v5 = V:Section({ Side = "Right" })
+        v5:Header({ Name = "Chams" })
+        feature(v5, { Title = "Chams", Flag = "VZ_Chams",
+            get = function() return CFG.EspChams end,
             set = function(v) CFG.EspChams = v end,
             Desc = "highlights bodies through walls" })
-        slider(v4, { Name = "Fill", Flag = "VZ_ChamsFill", Default = 72,
+        slider(v5, { Name = "Fill", Flag = "VZ_ChamsFill", Default = 72,
             Min = 0, Max = 100, Suffix = " %",
             Callback = function(v) CFG.EspChamsFillTrans = 1 - v / 100 end })
-        slider(v4, { Name = "Outline", Flag = "VZ_ChamsOut", Default = 85,
+        slider(v5, { Name = "Outline", Flag = "VZ_ChamsOut", Default = 85,
             Min = 0, Max = 100, Suffix = " %",
             Callback = function(v) CFG.EspChamsOutTrans = 1 - v / 100 end })
     end,
