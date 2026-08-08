@@ -1,7 +1,19 @@
 --[[
-    DEADLINE 0.25.2 — RUNTIME ANTICHEAT BYPASS  v3  (Potassium / Syllinse)
+    DEADLINE 0.25.2 — RUNTIME ANTICHEAT BYPASS  v4  (Potassium / Syllinse)
     ======================================================================
     Запускается В ЛЮБОЙ МОМЕНТ (FirstLoad, до MacLib:Window).
+
+    >>> v4: ГЛАВНЫЙ ФИКС МГНОВЕННОГО ЧЁРНОГО ЭКРАНА ПРИ ПОЯВЛЕНИИ MacLib <<<
+      Мгновенного UI-скана в дампе НЕТ — игра удаляет этот скрипт (см. U0111),
+      но автор лоадера подтверждает "UI-reactive detector". Раз мы его не видим,
+      делаем GUI MacLib НЕВИДИМЫМ для проверки, а не глушим санкцию постфактум:
+        [L4a] __namecall фильтрует GetChildren/GetDescendants/
+              GetGuiObjectsAtPosition на CoreGui/PlayerGui/gethui() — per-frame
+              сканер контейнера физически НЕ находит наш ScreenGui.
+        [L4b] getconnections -> :Disable() живых foreign-коннектов
+              ChildAdded/DescendantAdded на CoreGui и gethui() — signal-based
+              детектор не выстреливает в момент parent'а MacLib.
+      Сигнатура GUI MacLib: ScreenGui с DisplayOrder == 2147483647 (GetGui).
 
     ЧТО ИЗМЕНИЛОСЬ ПРОТИВ v2 (почему раньше чернел экран при MacLib UI):
       * Корень чёрного экрана — цепочка _cpr:
@@ -145,7 +157,7 @@ pcall(scrub, renv)
 
 ----------------------------------------------------------------------
 -- L2 — единый перехват: report-канал + приманка + ЧЁРНЫЙ ЭКРАН.
--- Ловим ДВА пути диспетчеризации:
+-- Ловим ДВА пути ��испетчеризации:
 --   (a) dot-форма  self.Method(self, x)  -> хук function-value (oth.hook / hookfunction)
 --   (b) colon-форма self:Method(x)       -> __namecall  (в loading_gui именно так!)
 -- Через один __namecall закрываем р��зом:
@@ -210,7 +222,86 @@ elseif base_fs then
     fs_mode = "hookfunction"
 end
 
--- (b) ЕДИНЫЙ __namecall: FireServer(colon) + PreloadAsync(colon) + ClearAllChildren(colon)
+----------------------------------------------------------------------
+-- L4 — СКРЫТИЕ ЧУЖОГО UI (корень МГНОВЕННОГО чёрного экрана при MacLib).
+-- В дампе НЕТ мгновенного UI-скана: игра удаляет этот скрипт (см. U0111),
+-- но автор лоадера прямо признаёт "UI-reactive detector". Раз мы его не видим —
+-- не ищем, а делаем GUI MacLib НЕВИДИМЫМ для любой проверки:
+--   1) Фильтруем энумерацию контейнеров GetChildren/GetDescendants/
+--      GetGuiObjectsAtPosition -> per-frame сканер НЕ находит наш ScreenGui.
+--   2) Глушим ЖИВЫЕ foreign-коннекты ChildAdded/DescendantAdded на CoreGui и
+--      gethui() -> signal-based детектор не выстреливает в момент parent'а.
+-- Сигнатура GUI MacLib: ScreenGui с DisplayOrder == 2147483647 (см. GetGui).
+----------------------------------------------------------------------
+local Players = game:GetService("Players")
+local LP = Players.LocalPlayer
+
+-- множество контейнеров-целей (СЫРЫЕ ссылки — те же, что и у детектора:
+-- game:GetService(...) отдаёт кэшированный ref, поэтому self == совпадёт)
+local CONTAINERS = {}
+pcall(function() CONTAINERS[game:GetService("CoreGui")] = true end)
+pcall(function() CONTAINERS[LP:WaitForChild("PlayerGui", 5)] = true end)
+pcall(function() if gethui then CONTAINERS[gethui()] = true end end)
+
+local OURS = setmetatable({}, { __mode = "k" }) -- корни нашего GUI (weak keys)
+local MACLIB_DORDER = 2147483647
+
+local function looks_like_ours(inst)
+    local ok, isSG = pcall(function() return inst:IsA("ScreenGui") end)
+    if not (ok and isSG) then return false end
+    local ok2, d = pcall(function() return inst.DisplayOrder end)
+    return ok2 and d == MACLIB_DORDER
+end
+local function mark_if_ours(inst)
+    if OURS[inst] then return true end
+    if looks_like_ours(inst) then OURS[inst] = true; return true end
+    return false
+end
+-- отфильтровать массив-результат энумерации (убрать наш GUI + его потомков)
+local function filter_list(list)
+    if type(list) ~= "table" or next(OURS) == nil then return list end
+    local out, n = {}, 0
+    local ok = pcall(function()
+        for _, inst in ipairs(list) do
+            local hide = OURS[inst] == true
+            if not hide then
+                for root in pairs(OURS) do
+                    if root ~= inst and inst:IsDescendantOf(root) then hide = true; break end
+                end
+            end
+            if not hide then n += 1; out[n] = inst end
+        end
+    end)
+    if not ok then return list end -- при сбое отдаём оригинал (не ломаем игру)
+    return out
+end
+local function is_target_container(self)
+    return CONTAINERS[self] == true
+end
+
+-- глушим ЖИВЫЕ foreign-коннекты signal-детектора. Только CoreGui + gethui()
+-- (PlayerGui НЕ трогаем — там легитимный UI игры). Отключаем ЛИШЬ Lua-коннекты
+-- игровых скриптов: наши имеют Script == nil, CoreScript'ы — ForeignState.
+local function neuter_signals(container)
+    if not container then return 0 end
+    local n = 0
+    local sigs = {}
+    pcall(function() sigs[#sigs+1] = container.ChildAdded end)
+    pcall(function() sigs[#sigs+1] = container.DescendantAdded end)
+    for _, sig in ipairs(sigs) do
+        pcall(function()
+            for _, c in ipairs(getconnections(sig)) do
+                if c.LuaConnection and not c.ForeignState and c.Script ~= nil then
+                    if pcall(function() c:Disable() end) then n += 1 end
+                end
+            end
+        end)
+    end
+    return n
+end
+
+-- (b) ЕДИНЫЙ __namecall: FireServer + PreloadAsync + ClearAllChildren
+--     + GetChildren/GetDescendants/GetGuiObjectsAtPosition (скрытие UI)
 local nc_mode = "none"
 pcall(function()
     local old_nc
@@ -219,19 +310,37 @@ pcall(function()
         if m == "FireServer" then
             if fs_swallow(self, (...)) then return end
         elseif m == "PreloadAsync" then
-            -- скан интерфейса в CoreGui: не выполняем -> нет _cpr про MacLib,
-            -- сервер не флагует, вся цепочка чёрного экрана обрывается здесь.
+            -- скан интерфейса в CoreGui: не выполняем -> нет _cpr про MacLib.
             if list_has_coregui((...)) then return end
         elseif m == "ClearAllChildren" then
             if self == ws then return end -- не даём стереть мир
+        elseif m == "GetChildren" or m == "GetDescendants" then
+            if is_target_container(self) then
+                return filter_list(old_nc(self, ...)) -- прячем наш GUI из энумерации
+            end
+        elseif m == "GetGuiObjectsAtPosition" then
+            return filter_list(old_nc(self, ...))     -- прячем наши GuiObject из пиксель-скана
         end
         return old_nc(self, ...)
     end))
     nc_mode = "on"
 end)
 if nc_mode ~= "on" then
-    warn("namecall hook failed — colon-form guards inactive")
+    warn("namecall hook failed — UI-hide & colon-form guards inactive")
 end
+
+-- глушим живой signal-детектор ДО того, как подключим свой слушатель
+local neutered = 0
+pcall(function()
+    neutered = neutered + neuter_signals(game:GetService("CoreGui"))
+    if gethui then neutered = neutered + neuter_signals(gethui()) end
+end)
+-- наш DescendantAdded: мгновенно помечаем GUI MacLib скрытым, как только он появится
+pcall(function()
+    for cont in pairs(CONTAINERS) do
+        cont.DescendantAdded:Connect(function(inst) mark_if_ours(inst) end)
+    end
+end)
 
 -- (c) dot-форма fallback для PreloadAsync и ClearAllChildren
 --     (на случай, если игра где-то зовёт их не через namecall)
@@ -338,7 +447,8 @@ pcall(function() if _G.actor_started then _G.actor_started = nil end end)
 pcall(patch_secondary)
 sweep_lolidiot()
 
--- фоновый резервный цикл (БЕЗ вывода в консоль — тихо держит оборону)
+-- фоновый резервный цикл (БЕЗ вывода в консоль — тихо держит оборону).
+-- Детектор/таймеры пересоздаются на респавне и смене карты -> переставляем.
 task.spawn(function()
     while true do
         task.wait(2)
@@ -346,15 +456,26 @@ task.spawn(function()
         patch_logscan()
         if rawget(_G, "actor_started") then pcall(function() _G.actor_started = nil end) end
         sweep_lolidiot()
+        -- L4: глушим заново переподключённые signal-детекторы + подхватываем
+        -- новые контейнеры/GUI после респавна.
+        pcall(function()
+            neuter_signals(game:GetService("CoreGui"))
+            if gethui then neuter_signals(gethui()) end
+        end)
+        pcall(function()
+            for cont in pairs(CONTAINERS) do
+                for _, ch in ipairs(cont:GetChildren()) do mark_if_ours(ch) end
+            end
+        end)
     end
 end)
 
 ----------------------------------------------------------------------
 --  ИТОГ  —  один короткий статус. Всё зелёное => "bypass done".
 ----------------------------------------------------------------------
--- критичное для чёрного экрана: namecall-хук обязан стоять
-if nc_mode ~= "on" then
-    warn("black-screen guard weak (no namecall)")
+-- L4 требует getconnections для глушения signal-детектора
+if type(getconnections) ~= "function" then
+    warn("no getconnections — signal-detector not neutralized (UI-hide still on)")
 end
 
 if #warns == 0 then
