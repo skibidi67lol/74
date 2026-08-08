@@ -1,7 +1,13 @@
 --[[
-    DEADLINE 0.25.2 — RUNTIME ANTICHEAT BYPASS  v4  (Potassium / Syllinse)
+    DEADLINE 0.25.2 — RUNTIME ANTICHEAT BYPASS  v5  (Potassium / Syllinse)
     ======================================================================
     Запускается В ЛЮБОЙ МОМЕНТ (FirstLoad, до MacLib:Window).
+
+    >>> v5: ФИКС ЧЁРНОГО ЭКРАНА ПРИ ЗАГРУЗКЕ МОДУЛЕЙ (SA/movement/vision) <<<
+      Причина: freeze-трапы getenv в NetworkEncode/util/caster на FirstLoad ещё
+      не существовали в GC (модули не зареквайрены) -> filtergc убивал < 3, а SA
+      по маркеру пропускал свой kill. write_exact_position -> getenv() -> фриз.
+      Фикс: force-require 3 модулей + retry-цикл; маркер ставится только при 3/3.
 
     >>> v4: ГЛАВНЫЙ ФИКС МГНОВЕННОГО ЧЁРНОГО ЭКРАНА ПРИ ПОЯВЛЕНИИ MacLib <<<
       Мгновенного UI-скана в дампе НЕТ — игра удаляет этот скрипт (см. U0111),
@@ -102,38 +108,79 @@ local warns = {}
 local function warn(s) warns[#warns + 1] = s end
 
 ----------------------------------------------------------------------
--- L1 — убить 3 freeze-детектора прямо в GC (переизобретаемые функции).
--- filtergc по общей константе "kill yourself"; каждое getenv-замыкание -> no-op.
--- Это функции горячего пути (u1.fire на выстрел, compress_* на пакет,
--- map_clamped на сжатие позиции) — они ПЕРЕвызываются, значит hookfunction валиден.
+-- L1 — убить 3 freeze-трапа getenv ("kill yourself").  <<< ГЛАВНЫЙ ФИКС v5 >>>
+-- Каждый трап (NetworkEncode / util / caster) при вызове перебирает getfenv(i)
+-- по стеку и, найдя rconsoleprint, делает FireServer("_genv") + while true do end.
+-- write_exact_position/compress_*/u1.fire зовут getenv() ПЕРВЫМ делом -> когда
+-- SA хукает write_exact_position, на стеке его обёртка с fenv экзекутора -> фриз.
+--
+-- ПОЧЕМУ РАНЬШЕ НЕ РАБОТАЛО: байпас стартует на FirstLoad, ДО того как игра
+-- зареквайрила эти модули -> filtergc находил < 3 замыканий, ставил маркер, а SA
+-- по маркеру пропускал СВОЙ kill. Трап оставался живым -> чёрный экран при выстреле.
+--
+-- ФИКС: сами форс-реквайрим 3 модуля (require кешируется -> та же копия, что у игры),
+-- потом filtergc+NOOP; повторяем в retry-цикле, пока не убьём все 3. Маркер ставим
+-- ТОЛЬКО когда killed>=3 (иначе SU/SA/movement/vision добьют сами).
 ----------------------------------------------------------------------
-local killed, seen = 0, 0
-pcall(function()
-    local found = filtergc("function", {
-        Constants      = { "kill yourself" },
-        IgnoreExecutor = true,
-    }, false)
-    if type(found) == "table" then
-        for _, fn in ipairs(found) do
-            if type(fn) == "function" then
-                seen += 1
-                local skip = false
-                if isexecutorclosure then
-                    local okE, isOurs = pcall(isexecutorclosure, fn)
-                    if okE and isOurs then skip = true end
-                end
-                if not skip and pcall(hookfunction, fn, NOOP) then
-                    killed += 1
+local RS = game:GetService("ReplicatedStorage")
+local TRAP_PATHS = {
+    { "module", "namespace", "NetworkEncode" },
+    { "module", "util", "lua", "util" },
+    { "module", "caster", "caster" },
+}
+-- НЕ yield: только FindFirstChild; если модуля ещё нет — retry-цикл повторит
+local function force_require_traps()
+    for _, path in ipairs(TRAP_PATHS) do
+        pcall(function()
+            local inst = RS
+            for _, seg in ipairs(path) do
+                inst = inst and inst:FindFirstChild(seg)
+            end
+            if inst and inst:IsA("ModuleScript") then
+                require(inst)
+            end
+        end)
+    end
+end
+local function kill_traps()
+    force_require_traps()
+    local n = 0
+    pcall(function()
+        local found = filtergc("function", {
+            Constants      = { "kill yourself" },
+            IgnoreExecutor = true,
+        }, false)
+        if type(found) == "table" then
+            for _, fn in ipairs(found) do
+                if type(fn) == "function" then
+                    local ours = false
+                    if isexecutorclosure then
+                        local okE, r = pcall(isexecutorclosure, fn)
+                        ours = okE and r
+                    end
+                    if not ours and pcall(hookfunction, fn, NOOP) then
+                        n += 1
+                    end
                 end
             end
         end
+    end)
+    if n >= 3 then
+        pcall(rawset, genv, "__dl_genv_traps_killed", n) -- разблокирует kill в SU/SA
     end
-end)
--- общий маркер: suite/movement/vision не хукают эти же 3 замыкания повторно
-pcall(rawset, genv, "__dl_genv_traps_killed", killed)
+    return n
+end
+
+local killed = kill_traps()
 if killed < 3 then
-    warn(("freeze traps %d/3 (util-trap fires 1%% per position compress; re-run FIRST)")
-        :format(killed))
+    -- модули ещё не загружены на FirstLoad — добиваем в фоне (require может yield)
+    task.spawn(function()
+        for _ = 1, 120 do            -- ~60с: с запасом до входа в раунд
+            if (rawget(genv, "__dl_genv_traps_killed") or 0) >= 3 then break end
+            task.wait(0.5)
+            kill_traps()
+        end
+    end)
 end
 
 -- вычистить tell-канал rconsole* из окружений (свои копии держим в PRIV)
@@ -456,6 +503,10 @@ task.spawn(function()
         patch_logscan()
         if rawget(_G, "actor_started") then pcall(function() _G.actor_started = nil end) end
         sweep_lolidiot()
+        -- freeze-трапы пересоздаются при смене карты/переезагрузке модулей
+        if (rawget(genv, "__dl_genv_traps_killed") or 0) < 3 then
+            pcall(kill_traps)
+        end
         -- L4: глушим заново переподключённые signal-детекторы + подхватываем
         -- новые контейнеры/GUI после респавна.
         pcall(function()
@@ -477,11 +528,15 @@ end)
 if type(getconnections) ~= "function" then
     warn("no getconnections — signal-detector not neutralized (UI-hide still on)")
 end
+-- L1: если трапы ещё не все убиты — фон добьёт, но предупредим
+if (rawget(genv, "__dl_genv_traps_killed") or 0) < 3 then
+    warn("freeze traps: modules not loaded yet — killing in background (safe before round)")
+end
 
 if #warns == 0 then
     status("bypass done")
 else
-    -- арт уже нарисован при init; печатаем только строки статуса
+    -- арт уже нарисован пр�� init; печатаем только строки статуса
     status("bypass done (with warnings):")
     for _, w in ipairs(warns) do status("  warn: " .. w) end
 end
