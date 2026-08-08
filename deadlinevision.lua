@@ -114,10 +114,18 @@ local CFG = {
     NoSuppression    = true,
 
     --[[ ── ПОГОДА И ОСВЕЩЕНИЕ ──────────────────────────────────────────
-        weather:61 — весь апдейт Lighting (ClockTime, туман, дождь,
-        пресеты) идёт под флагом. Выключаем — остаётся ровное яркое
-        освещение вместо ночи/тумана/ливня. Lighting сервер не читает. ]]
-    DisableWeather   = true,
+        weather:61 — весь апдейт Lighting (ClockTime, туман, дождь, пресеты)
+        идёт под флагом dbg_disable_weather. НО этот же heartbeat — ЕДИНСТВЕННОЕ,
+        что инициализирует Lighting/VOLUMIKA из тёмного загрузочного состояния.
+        Если выставить флаг ДО загрузки (как делал верхнеуровневый apply на
+        строке ~331 ещё до loader.start()), heartbeat умирает на первой строке
+        и сцена НИКОГДА не подсвечивается -> ЧЁРНЫЙ ЭКРАН перед загрузкой.
+
+        ФИКС: по умолчанию OFF; сам флаг пишется ТОЛЬКО после спавна персонажа
+        (weather_ready) — к этому моменту weather уже осветил сцену, поэтому
+        «заморозка» будет СВЕТЛОЙ, а не чёрной. Выключение тумблера возвращает
+        погоду (пишем dbg_disable_weather = false). ]]
+    DisableWeather   = false,
 
     --[[ ── ТРАЕКТОРИИ ПУЛЬ ─────────────────────────────────────────────
         caster:303/397 берут dbg_projectile и рисуют gizmo-линии
@@ -223,6 +231,20 @@ pcall(function()
 end)
 
 --[[
+    weather_ready(): истинно, когда игрок заспавнен в карту, т.е. weather-heartbeat
+    уже отработал и осветил Lighting/VOLUMIKA. Отключать погоду можно ТОЛЬКО после
+    этого — иначе замораживаем чёрное загрузочное состояние. Пока не готово,
+    dbg_disable_weather держим в false (KeepAlive-цикл переприменит, когда спавн).
+--]]
+local Players = game:GetService("Players")
+local function weather_ready()
+    local plr = Players.LocalPlayer
+    if not plr then return false end
+    local char = plr.Character
+    return char ~= nil and char:FindFirstChild("HumanoidRootPart") ~= nil
+end
+
+--[[
     set_client — штатный путь смены значения на клиенте. Он существует именно
     для того, чтобы обойти readonly-обёртку значения, поэтому пользуемся им, а
     не прямой записью в .value. Прямая запись оставлена запасным вариантом.
@@ -279,9 +301,11 @@ local function apply()
         set_shared("plr_suppression", false)
     end
 
-    if CFG.DisableWeather then
-        set_shared("dbg_disable_weather", true)
-    end
+    -- Пишем ВСЕГДА явное значение: выключение тумблера -> погода возвращается.
+    -- true разрешён ТОЛЬКО когда сцена уже освещена (персонаж заспавнен),
+    -- иначе оставляем false, чтобы не заморозить чёрный загрузочный кадр.
+    -- Пока не готово — KeepAlive-цикл переприменит true после спавна.
+    set_shared("dbg_disable_weather", (CFG.DisableWeather and weather_ready()) and true or false)
 
     set_shared("dbg_projectile", CFG.ShowProjectiles and true or false)
     set_shared("dbg_show_shot_trajectory", CFG.ShowShotVector and true or false)
