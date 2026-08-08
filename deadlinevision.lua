@@ -65,8 +65,8 @@ local genvKilled = 0
 do
     local g = getgenv()
     local already = g and rawget(g, GENV_MARK)
-    if type(already) == "number" then
-        genvKilled = already
+    if type(already) == "number" and already >= 3 then
+        genvKilled = already                 -- РЕАЛЬНО заглушено (все 3), доверяем
     else
         local NOOP = function() end
         local okf, found = pcall(filtergc, "function", {
