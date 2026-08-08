@@ -146,7 +146,7 @@ local CFG = {
 
     --[[ ── МГНОВЕННЫЙ ЗВУК ─────────────────────────────────────────────
         dl_replicator:604/661/731 задерживают звук выстрела на
-        distance / sv_sound_speed. Снижаем задержку почти до нуля — выстрелы
+        distance / sv_sound_speed. Снижаем задерж��у почти до нуля — выстрелы
         слышны сразу, направление читается точнее. 1120 -> 20000. ]]
     InstantSound     = true,
     SoundSpeed       = 20000,
@@ -289,13 +289,35 @@ end
 local function apply()
     applied = 0
 
-    if CFG.SeeThroughSmoke then
-        -- три параметра вместе: не набирает плотность, сразу тает, прозрачен
-        set_shared("cfg_smoke_max_opacity", 0)
-        set_shared("cfg_smoke_fade_in_end", 1)
-        set_shared("cfg_smoke_fade_out_start", 0)
-        set_shared("cfg_smoke_emit_rate", 0)
-    end
+    --[[
+        ЭТО И БЫЛ ЧЁРНЫЙ ЭКРАН (проверено по дампу, не догадка).
+        client/module/ecs/system/update_smokes:135-136 —
+
+            local value16 = SHARED_STATE.cfg_smoke_fade_in_end.value
+            local v47 = math.clamp(SHARED_STATE.cfg_smoke_fade_out_start.value,
+                                   value16, 0.99)
+
+        Прошлая версия писала fade_in_end = 1, то есть получалось
+        math.clamp(x, 1, 0.99) — min > max, а Luau на этом БРОСАЕТ ОШИБКУ.
+        update_smokes это ECS-система клиентского кадра: она падала каждый тик,
+        вместе с ней вставал весь ECS/рендер -> ЧЁРНЫЙ ЭКРАН на загрузке.
+        Дополнительно: строка 271 делит на fade_in_end (v87 / value16), а строка
+        172 делит на emit_rate (1 / v54) — нули там дают inf/nan.
+
+        Для «видеть через дым» хватает ОДНОГО безопасного параметра:
+        update_smokes:276 — v94 = math.clamp(v93, 0, 1) * value17, где
+        value17 = cfg_smoke_max_opacity. Ноль здесь = дым полностью прозрачен,
+        никакой математики не ломает. fade_* и emit_rate НЕ ТРОГАЕМ.
+    --]]
+    -- САМОЛЕЧЕНИЕ: если в этой же сессии успела отработать прошлая версия и
+    -- испортила fade_*/emit_rate, возвращаем дефолты игры (shared_state:335-352),
+    -- иначе update_smokes продолжит падать даже после обновления скрипта.
+    set_shared("cfg_smoke_fade_in_end", 0.01)
+    set_shared("cfg_smoke_fade_out_start", 0.8)
+    set_shared("cfg_smoke_emit_rate", 11)
+
+    -- единственный безопасный переключатель прозрачности дыма
+    set_shared("cfg_smoke_max_opacity", CFG.SeeThroughSmoke and 0 or 0.55)
 
     if CFG.NoSuppression then
         set_shared("plr_suppression", false)
