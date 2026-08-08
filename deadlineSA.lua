@@ -318,8 +318,8 @@ local genvKilled = 0
 do
     local g = getgenv()
     local already = g and rawget(g, GENV_MARK)
-    if type(already) == "number" and already >= 3 then
-        genvKilled = already                 -- РЕАЛЬНО заглушено (все 3), доверяем
+    if type(already) == "number" then
+        genvKilled = already                 -- уже заглушено другим скриптом
     else
         local NOOP = function() end
         local okf, found = pcall(filtergc, "function", {
@@ -3017,7 +3017,7 @@ end)
 --  ВЫГРУЗКА
 --======================================================================
 --[[
-    ДИАГ��ОСТИКА: getgenv().DL.debug()
+    ДИАГНОСТИКА: getgenv().DL.debug()
     Показывает ровно то, что раньше приходилось угадывать: нашли ли мы живой
     контроллер и НАШУ модель (LocalPlayer.Character тут всегда nil, поэтому это
     главный источник тихих поломок), сколько сущностей видно, есть ли цель и
