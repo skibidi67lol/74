@@ -128,8 +128,9 @@ local TRAP_PATHS = {
     { "module", "util", "lua", "util" },
     { "module", "caster", "caster" },
 }
--- НЕ yield: только FindFirstChild; если модуля ещё нет — retry-цикл повторит
-local function force_require_traps()
+-- НЕ yield: только FindFirstChild. Возвращает, сколько модулей реально загружено.
+local function modules_present()
+    local ok = 0
     for _, path in ipairs(TRAP_PATHS) do
         pcall(function()
             local inst = RS
@@ -137,14 +138,36 @@ local function force_require_traps()
                 inst = inst and inst:FindFirstChild(seg)
             end
             if inst and inst:IsA("ModuleScript") then
-                require(inst)
+                require(inst)      -- кешируется: та же копия, что у игры
+                ok += 1
             end
         end)
     end
+    return ok
 end
+
+local traps_total = 0        -- сколько трапов реально заглушили за сессию
+local traps_done  = false    -- убивать больше нечего
+
+--[[
+    КРИТИЧНО (баг предыдущей версии — он ломал SilentAim):
+    после hookfunction(getenv, NOOP) у функции БОЛЬШЕ НЕТ константы "kill yourself",
+    поэтому filtergc её уже не находит и счётчик «убитых за проход» падает до 0.
+    Раньше условие завершения было n >= 3 -> оно НИКОГДА не выполнялось -> маркер не
+    ставился -> filtergc крутился вечно каждые 2 c. А SA целиком живёт на filtergc
+    (refresh_meta ищет сущности, find_framework — фреймворк): параллельный GC-обход
+    отдавал пустой результат -> entByModel пуст -> цели нет -> пуля не редиректилась,
+    хотя FOV-circle рисовался. Плюс постоянный stop-the-world скан = лаги на загрузке.
+
+    Правильное условие завершения: все 3 модуля загружены И новых совпадений нет.
+    И главное — НЕ трогаем GC вообще, пока модули не появились в ReplicatedStorage.
+--]]
 local function kill_traps()
-    force_require_traps()
-    local n = 0
+    if traps_done then return traps_total end
+    if modules_present() < #TRAP_PATHS then
+        return traps_total       -- рано: ни одного filtergc на этапе загрузки
+    end
+    local newly = 0
     pcall(function()
         local found = filtergc("function", {
             Constants      = { "kill yourself" },
@@ -159,26 +182,30 @@ local function kill_traps()
                         ours = okE and r
                     end
                     if not ours and pcall(hookfunction, fn, NOOP) then
-                        n += 1
+                        newly += 1
                     end
                 end
             end
         end
     end)
-    if n >= 3 then
-        pcall(rawset, genv, "__dl_genv_traps_killed", n) -- разблокирует kill в SU/SA
+    traps_total += newly
+    if newly == 0 then
+        -- совпадений не осталось => все трапы уже NOOP (нами или другим скриптом)
+        traps_done = true
+        pcall(rawset, genv, "__dl_genv_traps_killed", math.max(traps_total, 3))
     end
-    return n
+    return traps_total
 end
 
-local killed = kill_traps()
-if killed < 3 then
-    -- модули ещё не загружены на FirstLoad — добиваем в фоне (require может yield)
+kill_traps()
+if not traps_done then
+    -- модули ещё не в ReplicatedStorage: ждём их появления и добиваем ОДИН раз.
+    -- Выходим сразу по traps_done — никаких вечных GC-сканов.
     task.spawn(function()
-        for _ = 1, 120 do            -- ~60с: с запасом до входа в раунд
-            if (rawget(genv, "__dl_genv_traps_killed") or 0) >= 3 then break end
-            task.wait(0.5)
+        for _ = 1, 60 do             -- ~60с, с запасом до входа в раунд
+            task.wait(1)
             kill_traps()
+            if traps_done then break end
         end
     end)
 end
@@ -284,7 +311,7 @@ local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 
 -- множество контейнеров-целей (СЫРЫЕ ссылки — те же, что и у детектора:
--- game:GetService(...) отдаёт кэшированный ref, поэтому self == совпадёт)
+-- game:GetService(...) отдаёт кэшированный ref, п��этому self == совпадёт)
 local CONTAINERS = {}
 pcall(function() CONTAINERS[game:GetService("CoreGui")] = true end)
 pcall(function() CONTAINERS[LP:WaitForChild("PlayerGui", 5)] = true end)
@@ -474,7 +501,7 @@ patch_logscan()
 --   Timer.expired() = (next_time < get_time())  -> next_time=huge => НИКОГДА.
 -- Убивает packet 1 (скан PlayerGui), 2 (bodymovers на torso), 4 (вес),
 -- 5/6 (velocity), 7 (rpm>1500), 8 (dirty_properties), 9 (_G.actor_started), 10 (stop).
--- Packet 3 (torso_hitbox) вне таймера -> просто не трогаем хитбокс.
+-- Packet 3 (torso_hitbox) вне таймера -> просто не трогаем хи��бокс.
 -- Контроллер пересоздаётся на респавне -> переставляем в цикле.
 ----------------------------------------------------------------------
 local HUGE = math.huge
@@ -503,10 +530,10 @@ task.spawn(function()
         patch_logscan()
         if rawget(_G, "actor_started") then pcall(function() _G.actor_started = nil end) end
         sweep_lolidiot()
-        -- freeze-трапы пересоздаются при смене карты/переезагрузке модулей
-        if (rawget(genv, "__dl_genv_traps_killed") or 0) < 3 then
-            pcall(kill_traps)
-        end
+        -- ВАЖНО: kill_traps здесь БОЛЬШЕ НЕ ЗОВЁМ. require кешируется, новых
+        -- getenv-замыканий не появляется, а filtergc — stop-the-world обход GC:
+        -- вечный вызов ломал filtergc в SA (пустой список сущностей -> нет цели).
+        -- Трапы добивает одноразовый retry-цикл выше, по traps_done.
         -- L4: глушим заново переподключённые signal-детекторы + подхватываем
         -- новые контейнеры/GUI после респавна.
         pcall(function()
