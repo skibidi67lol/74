@@ -1,636 +1,584 @@
 --[[
-    DEADLINE 0.25.2 — RUNTIME ANTICHEAT BYPASS  v5  (Potassium / Syllinse)
+    DEADLINE 0.25.2 — VISION / ENVIRONMENT  (Potassium)
     ======================================================================
-    Запускается В ЛЮБОЙ МОМЕНТ (FirstLoad, до MacLib:Window).
+    Отдельный скрипт под ОДИН класс уязвимости: SHARED_STATE.
 
-    >>> v5: ФИКС ЧЁРНОГО ЭКРАНА ПРИ ЗАГРУЗКЕ МОДУЛЕЙ (SA/movement/vision) <<<
-      Причина: freeze-трапы getenv в NetworkEncode/util/caster на FirstLoad ещё
-      не существовали в GC (модули не зареквайрены) -> filtergc убивал < 3, а SA
-      по маркеру пропускал свой kill. write_exact_position -> getenv() -> фриз.
-      Фикс: force-require 3 модулей + retry-цикл; маркер ставится только при 3/3.
+    ПОЧЕМУ ЭТО РАБОТАЕТ (разбор, а не догадка).
+    Модуль module/shared_state реплицируется ТОЛЬКО в одну сторону:
+    сервер -> клиент (FireAllClients). Метод :set_client(v) пишет значение
+    исключительно в ЛОКАЛЬНУЮ копию — обратно на сервер не уходит ничего.
+    Сервер держит собственную копию и о нашей не знает.
 
-    >>> v4: ГЛАВНЫЙ ФИКС МГНОВЕННОГО ЧЁРНОГО ЭКРАНА ПРИ ПОЯВЛЕНИИ MacLib <<<
-      Мгновенного UI-скана в дампе НЕТ — игра удаляет этот скрипт (см. U0111),
-      но автор лоадера подтверждает "UI-reactive detector". Раз мы его не видим,
-      делаем GUI MacLib НЕВИДИМЫМ для проверки, а не глушим санкцию постфактум:
-        [L4a] __namecall фильтрует GetChildren/GetDescendants/
-              GetGuiObjectsAtPosition на CoreGui/PlayerGui/gethui() — per-frame
-              сканер контейнера физически НЕ находит наш ScreenGui.
-        [L4b] getconnections -> :Disable() живых foreign-коннектов
-              ChildAdded/DescendantAdded на CoreGui и gethui() — signal-based
-              детектор не выстреливает в момент parent'а MacLib.
-      Сигнатура GUI MacLib: ScreenGui с DisplayOrder == 2147483647 (GetGui).
+    А клиентский античит (FirstPersonController_extend:680-790) проверяет
+    строго конечный список:
+        packet 1  посторонние ScreenGui в PlayerGui
+        packet 3  torso_hitbox.CanCollide / CollisionGroup   (каждый тик!)
+        packet 4  char_data.collective_weight < 0
+        packet 5  ammunition.velocity_drop <= 0
+        packet 6  ammunition.velocity > 10000
+        packet 7  properties.firing.rpm > 1500
+        packet 8  build.result.dirty_properties ~= nil
+        packet 9  _G.actor_started
+        packet 10 controller.stop
+        + illegal bodymovers на torso
+    Ни одного из флагов ниже в этом списке НЕТ. Поэтому это именно обход:
+    мы меняем то, что сервер не наблюдает и не может наблюдать.
 
-    ЧТО ИЗМЕНИЛОСЬ ПРОТИВ v2 (почему раньше чернел экран при MacLib UI):
-      * Корень чёрного экрана — цепочка _cpr:
-          MacLib -> его иконки живут в CoreGui/gethui ->
-          loading_gui корутина зовёт ContentProvider:PreloadAsync({CoreGui})
-          -> на каждый rbxassetid:// шлёт loading_status:FireServer("_cpr "..id)
-          -> сервер флагует -> тамперит loading_status
-          -> reparent-guard видит (loading_status.Parent).Parent ~= ReplicatedStorage
-          -> Workspace:ClearAllChildren() + troll()  = ЧЁРНЫЙ ЭКРАН + фриз.
-      * ClearAllChildren и PreloadAsync в loading_gui вызываются COLON-формой
-        (self:Method(...)) -> идут через NAMECALL. Хук на function-value их
-        пропускает. Теперь оба ловятся в едином __namecall-хуке (как FireServer).
-      * Убран SANCTION_MARKS(filtergc+hookfunction по "_cpr"/"ORGANIZATION"/":D"):
-        это тела УЖЕ запущенных корутин, хук по ссылке на них = no-op.
-        Заменено на надёжный перехват самих вызовов -> сервер про MacLib не узнаёт,
-        значит reparent-guard/troll/ClearAllChildren не срабатывают в принципе.
+    ЧЕГО ЗДЕСЬ СОЗНАТЕЛЬНО НЕТ:
+      • ammunition.velocity / velocity_drop  -> packet 5/6
+      • properties.firing.rpm                -> packet 7
+      • любая запись в properties            -> packet 8 (dirty_properties)
+    Их трогать нельзя, и мы не трогаем.
 
-    ЧТО ОСТАЁТСЯ (проверено рабочим в v2 — сохранено):
-      [L1] 3 freeze-трапа getfenv->"kill yourself"->while true (caster/NetworkEncode/util)
-           — это ПЕРЕвызываемые функции горячего пути, hookfunction по ним валиден.
-      [L2] report-канал loading_status:FireServer(code) + userdata-приманка + logscan.
-      [L5] secondary_replication_timer (FPC_extend) — packet 1,2,4-10 глушим через next_time=huge.
-
-    ГРАНИЦА: серверная валидация хитов (HitregManager rollback 190мс) остаётся —
-    снимаем клиентский детект/фризы/бан-репорты, но не даём невозможные хиты.
+    Запуск в любой момент. Выключить: getgenv().DLV.unload()
 --]]
 
-if getgenv().__dl_bypass_v4 then
-    -- уже активен — НЕ рисуем арт заново, только короткая строка статуса
-    local s = getgenv().__dl_bypass_status
-    if s then pcall(s, "bypass already active") end
-    return
+if getgenv().DLV and getgenv().DLV.unload then
+    pcall(getgenv().DLV.unload)
 end
-getgenv().__dl_bypass_v4 = true
 
---// быстрые ссылки (захватываем ДО любых хуков)
-local typeof, type      = typeof, type
-local ipairs, pairs     = ipairs, pairs
-local pcall             = pcall
-local rawget, rawset    = rawget, rawset
-local sfind             = string.find
-local genv, renv        = getgenv(), getrenv()
+local DLV = {}
+getgenv().DLV = DLV
+
+local function log(msg)
+    local out = rconsoleprint or print
+    pcall(out, "[dlv] " .. tostring(msg))
+end
 
 --======================================================================
---  КОНСОЛЬНЫЙ ВЫВОД  —  ТОЛЬКО ASCII-баннер + короткий статус.
---  Приватные копии консоли: глобалку rconsole* занулим (это tell-канал),
---  а свой вывод оставим рабочим через PRIV.
+--  СТРАХОВКА ОТ ЛОВУШЕК getenv
 --======================================================================
-local PRIV = {}
-local function raw_out(s)
-    local f = PRIV.rconsoleprint or rconsoleprint
-    if f then pcall(f, s) else pcall(print, s) end
-end
-local function line(s) raw_out(tostring(s) .. "\n") end
-
-local BANNER = {
-    [[ .oooooo..o             oooo  oooo   o8o                                 ]],
-    [[d8P'    `Y8             `888  `888   `"'                                 ]],
-    [[Y88bo.      oooo    ooo  888   888  oooo  ooo. .oo.    .oooo.o  .ooooo.  ]],
-    [[ `"Y8888o.   `88.  .8'   888   888  `888  `888P"Y88b  d88(  "8 d88' `88b ]],
-    [[     `"Y88b   `88..8'    888   888   888   888   888  `"Y88b.  888ooo888 ]],
-    [[oo     .d8P    `888'     888   888   888   888   888  o.  )88b 888    .o ]],
-    [[8""88888P'      .8'     o888o o888o o888o o888o o888o 8""888P' `Y8bod8P' ]],
-    [[            .o..P'                                                       ]],
-    [[            `Y8P'                                                        ]],
-}
--- ASCII-арт печатаем РОВНО ОДИН РАЗ за сессию (глобальный флаг).
-local function banner_art()
-    if rawget(genv, "__dl_banner_shown") then return end
-    pcall(rawset, genv, "__dl_banner_shown", true)
-    for _, l in ipairs(BANNER) do line(l) end
-end
--- статус-строки — простой текст под артом (init / done / warn / already)
-local function status(msg) line(tostring(msg)) end
-pcall(rawset, genv, "__dl_bypass_status", status)
-
-banner_art()
-status("bypass init")
-
---// общий C-noop для замен (newcclosure = антидетект islclosure/isexecutorclosure)
-local NOOP = newcclosure(function() end)
-pcall(setstackhidden, NOOP, true)
-
--- накопитель проблем: если критичное не встало — скажем "warn" внизу
-local warns = {}
-local function warn(s) warns[#warns + 1] = s end
-
-----------------------------------------------------------------------
--- L1 — убить 3 freeze-трапа getenv ("kill yourself").  <<< ГЛАВНЫЙ ФИКС v5 >>>
--- Каждый трап (NetworkEncode / util / caster) при вызове перебирает getfenv(i)
--- по стеку и, найдя rconsoleprint, делает FireServer("_genv") + while true do end.
--- write_exact_position/compress_*/u1.fire зовут getenv() ПЕРВЫМ делом -> когда
--- SA хукает write_exact_position, на стеке его обёртка с fenv экзекутора -> фриз.
---
--- ПОЧЕМУ РАНЬШЕ НЕ РАБОТАЛО: байпас стартует на FirstLoad, ДО того как игра
--- зареквайрила эти модули -> filtergc находил < 3 замыканий, ставил маркер, а SA
--- по маркеру пропускал СВОЙ kill. Трап оставался живым -> чёрный экран при выстреле.
---
--- ФИКС: сами форс-реквайрим 3 модуля (require кешируется -> та же копия, что у игры),
--- потом filtergc+NOOP; повторяем в retry-цикле, пока не убьём все 3. Маркер ставим
--- ТОЛЬКО когда killed>=3 (иначе SU/SA/movement/vision добьют сами).
-----------------------------------------------------------------------
-local RS = game:GetService("ReplicatedStorage")
-local TRAP_PATHS = {
-    { "module", "namespace", "NetworkEncode" },
-    { "module", "util", "lua", "util" },
-    { "module", "caster", "caster" },
-}
--- НЕ yield: только FindFirstChild. Возвращает, сколько модулей реально загружено.
-local function modules_present()
-    local ok = 0
-    for _, path in ipairs(TRAP_PATHS) do
-        pcall(function()
-            local inst = RS
-            for _, seg in ipairs(path) do
-                inst = inst and inst:FindFirstChild(seg)
+--[[
+    Те же три ловушки, что и в остальных скриптах (константа "kill yourself"):
+        NetworkEncode:12  caster:404  util:10
+    Последняя — под if math.random(1,100) ~= 100, то есть стреляет 1 раз из
+    100 на каждый map_clamped. Мы читаем SHARED_STATE, а не хукаем горячие
+    функции, но защита стоит копейки и снимает целый класс случайных фризов.
+--]]
+--[[
+    ИДЕМПОТЕНТНОСТЬ: если ловушки уже заглушил другой скрипт (обход, suite,
+    movement) — не хукаем повторно. Четыре слоя hookfunction на функциях
+    горячего пути не нужны никому.
+--]]
+local GENV_MARK = "__dl_genv_traps_killed"
+local genvKilled = 0
+do
+    local g = getgenv()
+    local already = g and rawget(g, GENV_MARK)
+    if type(already) == "number" then
+        genvKilled = already
+    else
+        local NOOP = function() end
+        local okf, found = pcall(filtergc, "function", {
+            Constants      = { "kill yourself" },
+            IgnoreExecutor = true,
+        }, false)
+        if okf and type(found) == "table" then
+            for _, fn in ipairs(found) do
+                if type(fn) == "function" and pcall(hookfunction, fn, NOOP) then
+                    genvKilled = genvKilled + 1
+                end
             end
-            if inst and inst:IsA("ModuleScript") then
-                require(inst)      -- кешируется: та же копия, что у игры
-                ok += 1
+        end
+        if g then pcall(rawset, g, GENV_MARK, genvKilled) end
+    end
+    for _, envGetter in ipairs({ getgenv, getrenv }) do
+        pcall(function()
+            local env = envGetter and envGetter()
+            if type(env) == "table" and rawget(env, "rconsoleprint") ~= nil then
+                rawset(env, "rconsoleprint", nil)
             end
         end)
+    end
+end
+
+--======================================================================
+--  CONFIG
+--======================================================================
+local CFG = {
+    --[[ ── ДЫМ НАСКВОЗЬ ────────────────────────────────────────────────
+        Самое сильное из всего списка. Дым — клиентская ECS-система частиц
+        (client/module/ecs/system/update_smokes:120-137). Прозрачность,
+        скорость появления и время жизни пыжа берутся из SHARED_STATE и
+        нигде не проверяются. Ставим прозрачность 0 — дымовые гранаты
+        противника перестают работать против нас, для него всё как обычно. ]]
+    SeeThroughSmoke  = true,
+
+    --[[ ── БЕЗ ПОДАВЛЕНИЯ ──────────────────────────────────────────────
+        caster:676: подавление применяется только если
+        SHARED_STATE.plr_suppression.value истинно. Ставим false — пули
+        рядом больше не дают размытие и не сбивают прицел.
+        Само подавление считается НАШИМ клиентом (caster вызывает
+        u1.suppress, зарегистрированный клиентским фреймворком), поэтому
+        отключение полностью в нашей власти. ]]
+    NoSuppression    = true,
+
+    --[[ ── ПОГОДА И ОСВЕЩЕНИЕ ──────────────────────────────────────────
+        weather:61 — весь апдейт Lighting (ClockTime, туман, дождь,
+        пресеты) идёт под флагом. Выключаем — остаётся ровное яркое
+        освещение вместо ночи/тумана/ливня. Lighting сервер не читает. ]]
+    DisableWeather   = true,
+
+    --[[ ── ТРАЕКТОРИИ ПУЛЬ ─────────────────────────────────────────────
+        caster:303/397 берут dbg_projectile и рисуют gizmo-линии
+        (caster:590-603). Важно, что кастер на нашем клиенте обрабатывает и
+        ЧУЖИЕ выстрелы (dl_replicator создаёт кастеры для реплицированных
+        выстрелов) — значит видно траектории входящих пуль, то есть откуда
+        по нам стреляют. ]]
+    ShowProjectiles  = false,
+
+    --[[ dbg_show_shot_trajectory (rifle_methods:145): зелёная линия — куда
+         смотрит ствол, красная — фактическое направление с разбросом.
+         Удобно для проверки, работает ли no-spread. ]]
+    ShowShotVector   = false,
+
+    --[[ dbg_char_gizmos (DebugVisualize:15,66): точки и цилиндры коллизии
+         персонажей — фактически показ хитбоксов симуляции. ]]
+    ShowCharGizmos   = false,
+
+    --[[ ── МГНОВЕННЫЙ ЗВУК ─────────────────────────────────────────────
+        dl_replicator:604/661/731 задерживают звук выстрела на
+        distance / sv_sound_speed. Снижаем задержку почти до нуля — выстрелы
+        слышны сразу, направление читается точнее. 1120 -> 20000. ]]
+    InstantSound     = true,
+    SoundSpeed       = 20000,
+
+    --[[ ── СТАБИЛЬНЫЙ ПРИЦЕЛ ───────────────────────────────────────────
+        Всё это живёт только в клиентском fp_controller и в UI:
+          plr_recoil                        rifle_methods:211 (пружины камеры)
+          plr_stamina_shake_multiplier      rifle_methods:1900
+        Направление выстрела считается ДО применения отдачи, поэтому это
+        именно визуальная/эргономическая часть — сервер её не видит. ]]
+    SteadyAim        = true,
+
+    --[[ ── БЕСКОНЕЧНАЯ СТАМИНА (правильным способом) ────────────────────
+        ВАЖНО, ЧЕМУ Я УЧЁЛСЯ: первым делом я раздул plr_max_stamina и
+        plr_max_arm_stamina до 100000 — и это БЫЛО ОШИБКОЙ.
+        Текущее значение stamina берётся из максимума только ОДИН РАЗ, на
+        спавне (FPC:122/149). Если поднять максимум позже, текущее так и
+        останется 60, а UI считает заполнение как current/max
+        (StaminaBar:52) — полоска выглядит пустой, плюс FPC_extend:441
+        начинает считать, что полоску надо показывать.
+
+        Правильнее обнулить сами РАСХОДЫ — тогда стамина просто не убывает,
+        а максимум и полоска остаются нормальными:
+          plr_stamina_run_drain    1.4  FPC:1578   (бег)
+          plr_stamina_jump_drain   3    FPC_ext:197 (прыжок)
+          plr_stamina_lean_drain   0.25 FPC:696    (наклон)
+          plr_vault_stamina_drain  7    FPC_ext:228 (вольт)
+          plr_arm_stamina_drain    2    FPC:1589/1598 (прицеливание)
+          plr_arm_stamina_drain_hold_breath 3 FPC:1590/1601 (задержка дыхания)
+        Бонусом: FPC_extend:154 запрещает вольт при
+        stamina < plr_vault_stamina_drain. С нулём условие stamina < 0 никогда
+        не выполняется — вольт больше не блокируется усталостью.
+        Регенерацию тоже поднимаем, чтобы добрать то, что снимает
+        нефлаговый расход в FPC:751 (там значение зашито в код). ]]
+    InfStamina       = true,
+
+    --[[ ── ЗАЩИТА ОТ ОСЛЕПЛЕНИЯ ────────────────────────────────────────
+        plr_lens_flare (lens_flare:91) — вспышки от фонарей и лазеров
+        противника рисует наш клиент. Выключаем. ]]
+    NoLensFlare      = true,
+
+    --[[ ── НОЧНОЕ ВИДЕНИЕ ЯРЧЕ ─────────────────────────────────────────
+        plr_nv_color (NightVisionEffects:37) — только ColorCorrection на
+        клиенте. Белый вместо зелёного = максимальная различимость.
+        ВАЖНО: сам факт включённого ПНВ реплицируется битом
+        nv_head_gear_enabled в пакете, поэтому «ПНВ без прибора» здесь НЕ
+        делается — это была бы уже подделка пакета. Меняем только цвет. ]]
+    BrightNVG        = false,
+
+    --[[ ── ПРИЦЕЛИВАНИЕ В КУСТАХ ───────────────────────────────────────
+        plr_aim_in_bushes (rifle:26,302) — запрет прицеливаться в зоне
+        кустарника проверяется ТОЛЬКО клиентом, по локальному
+        slow_movement_zone_type, который серверу не уходит. ]]
+    AimInBushes      = true,
+
+    --[[ ── УТОПЛЕНИЕ ───────────────────────────────────────────────────
+        Второй слой к тому, что делает movement-скрипт. Смерть в воде
+        докладывает САМ КЛИЕНТ (ClientFramework:1329-1332):
+            if water_time < 0.1 then u18:SendToServer() end
+        Здесь просто задираем предел, до которого water_time восстанавливается
+        (ClientFramework:1336 clamp(water_time, 0, plr_drown_time)). ]]
+    NoDrown          = true,
+    DrownTime        = 100000,
+
+    KeepAlive        = true,   -- сервер может переслать значения -> переставляем
+    Interval         = 2.0,
+}
+DLV.config = CFG
+
+local running = true
+local applied = 0
+
+--======================================================================
+--  ДОСТУП К SHARED_STATE
+--======================================================================
+local RS = cloneref and cloneref(game:GetService("ReplicatedStorage"))
+    or game:GetService("ReplicatedStorage")
+
+local SHARED
+pcall(function()
+    SHARED = require(RS.module.shared_state).SHARED_STATE
+end)
+
+--[[
+    set_client — штатный путь смены значения на клиенте. Он существует именно
+    для того, чтобы обойти readonly-обёртку значения, поэтому пользуемся им, а
+    не прямой записью в .value. Прямая запись оставлена запасным вариантом.
+--]]
+local original = {}
+
+local function set_shared(key, value)
+    if not SHARED then
+        return false
+    end
+    local obj = rawget(SHARED, key)
+    if type(obj) ~= "table" then
+        return false
+    end
+    if original[key] == nil then
+        original[key] = rawget(obj, "value")
+    end
+    local ok = pcall(function()
+        if type(obj.set_client) == "function" then
+            obj:set_client(value)
+        else
+            obj.value = value
+        end
+    end)
+    if ok then
+        applied = applied + 1
     end
     return ok
 end
 
-local traps_total = 0        -- сколько трапов реально заглушили за сессию
-local traps_done  = false    -- убивать больше нечего
-
---[[
-    КРИТИЧНО (баг предыдущей версии — он ломал SilentAim):
-    после hookfunction(getenv, NOOP) у функции БОЛЬШЕ НЕТ константы "kill yourself",
-    поэтому filtergc её уже не находит и счётчик «убитых за проход» падает до 0.
-    Раньше условие завершения было n >= 3 -> оно НИКОГДА не выполнялось -> маркер не
-    ставился -> filtergc крутился вечно каждые 2 c. А SA целиком живёт на filtergc
-    (refresh_meta ищет сущности, find_framework — фреймворк): параллельный GC-обход
-    отдавал пустой результат -> entByModel пуст -> цели нет -> пуля не редиректилась,
-    хотя FOV-circle рисовался. Плюс постоянный stop-the-world скан = лаги на загрузке.
-
-    Правильное условие завершения: все 3 модуля загружены И новых совпадений нет.
-    И главное — НЕ трогаем GC вообще, пока модули не появились в ReplicatedStorage.
---]]
-local function kill_traps()
-    if traps_done then return traps_total end
-    if modules_present() < #TRAP_PATHS then
-        return traps_total       -- рано: ни одного filtergc на этапе загрузки
+local function restore_shared(key)
+    local prev = original[key]
+    if prev == nil then
+        return
     end
-    local newly = 0
-    pcall(function()
-        local found = filtergc("function", {
-            Constants      = { "kill yourself" },
-            IgnoreExecutor = true,
-        }, false)
-        if type(found) == "table" then
-            for _, fn in ipairs(found) do
-                if type(fn) == "function" then
-                    local ours = false
-                    if isexecutorclosure then
-                        local okE, r = pcall(isexecutorclosure, fn)
-                        ours = okE and r
-                    end
-                    if not ours and pcall(hookfunction, fn, NOOP) then
-                        newly += 1
-                    end
-                end
-            end
-        end
-    end)
-    traps_total += newly
-    if newly == 0 then
-        traps_done = true
-        -- ЧЕСТНЫЙ маркер: раньше здесь стоял math.max(traps_total, 3), который
-        -- рапортовал «3 убито» даже при 0 -> SA/movement/vision по маркеру
-        -- ПРОПУСКАЛИ свой kill, и трапы оставались живыми. Ставим только правду;
-        -- если убили меньше 3 — пусть модули отработают своим сканом сами
-        -- (лишний filtergc безвреден, а сами трапы уже обезврежены через scrub).
-        if traps_total >= 3 then
-            pcall(rawset, genv, "__dl_genv_traps_killed", traps_total)
-        end
-    end
-    return traps_total
-end
-
-kill_traps()
-if not traps_done then
-    -- модули ещё не в ReplicatedStorage: ждём их появления и добиваем ОДИН раз.
-    -- Выходим сразу по traps_done — никаких вечных GC-сканов.
-    task.spawn(function()
-        for _ = 1, 60 do             -- ~60с, с запасом до входа в раунд
-            task.wait(1)
-            kill_traps()
-            if traps_done then break end
-        end
-    end)
-end
-
--- вычистить tell-канал rconsole* из окружений (свои копии держим в PRIV)
-local TELLS = {
-    "rconsoleprint","rconsolewarn","rconsoleinfo","rconsoleerr","rconsoleerror",
-    "rconsolename","rconsolesettitle","rconsolecreate","rconsoledestroy",
-    "rconsoleclear","rconsoleinput","printconsole","consoleprint",
-}
---[[
-    ГЛАВНЫЙ O(1) ФИКС ФРИЗА (проверено по точному коду трапа, NetworkEncode:14-33):
-
-        for i = 0, 9 do
-            local _, result = pcall(getfenv, i)
-            if type(result) == "table" then v1 = result.rconsoleprint end
-            if v1 then  loading_status:FireServer("_genv")
-                        result.rconsoleprint("kill yourself")
-                        while true do
-                        end            -- <- ФРИЗ ВСЕГО КЛИЕНТА
-            end
-        end
-
-    Трап проверяет РОВНО ОДНО поле — rconsoleprint — в окружениях со стека. Значит
-    не нужно гоняться за getenv-замыканиями через filtergc (это гонка: caster
-    реквайрится позже, его трап рождается уже ПОСЛЕ нашего скана — именно поэтому
-    игра фризила при выстреле). Достаточно сделать поле ЛОЖНЫМ:
-
-      * rawset(tbl, k, nil)  НЕ помогает: nil снимает только сырое значение, и
-        индексация уходит по __index в общие глобалы -> трап снова видит функцию;
-      * rawset(tbl, k, false) ЭКРАНИРУЕТ наследование (rawget даёт non-nil, __index
-        не вызывается) и делает проверку трапа falsy -> `while true do end`
-        недостижим ВООБЩЕ, для всех трёх модулей и в любой момент загрузки.
-
-    Идём по всей цепочке __index, а также по окружениям наших потоков (getfenv 0/1),
-    т.к. у каждого нашего скрипта своё env-таблица. Оригиналы кладём в PRIV —
-    свой вывод продолжает работать, а `rconsoleprint or print` в модулях
-    корректно падает на print (false or print == print).
---]]
-local function scrub(tbl, depth)
-    local t, seen = tbl, {}
-    depth = depth or 6
-    while type(t) == "table" and not seen[t] and depth > 0 do
-        seen[t] = true
-        for _, k in ipairs(TELLS) do
-            local v = rawget(t, k)
-            if type(v) == "function" then PRIV[k] = PRIV[k] or v end
-            if v ~= false then pcall(rawset, t, k, false) end
-        end
-        local mt = getmetatable(t)
-        t = (type(mt) == "table") and mt.__index or nil
-        depth -= 1
-    end
-end
-pcall(scrub, genv)
-pcall(scrub, renv)
--- окружения наших собственных потоков/замыканий (их и видит трап на стеке)
-for i = 0, 2 do
-    pcall(function() scrub(getfenv(i)) end)
-end
-pcall(function() scrub(getfenv(scrub)) end)
-
-----------------------------------------------------------------------
--- L2 — единый перехват: report-канал + приманка + ЧЁРНЫЙ ЭКРАН.
--- Ловим ДВА пути ��испетчеризации:
---   (a) dot-форма  self.Method(self, x)  -> хук function-value (oth.hook / hookfunction)
---   (b) colon-форма self:Method(x)       -> __namecall  (в loading_gui именно так!)
--- Через один __namecall закрываем р��зом:
---   FireServer      : report-коды (_genv/_i/_ri/_rt/_rq/_ls/_cpr/"1"), userdata-приманка,
---                     reparent-broadcast "THE ORGANIZATION HAS FOUND US"
---   PreloadAsync    : скан {CoreGui} -> ЭТО источник _cpr про MacLib. Режем в корне.
---   ClearAllChildren: на Workspace -> сам чёрный экран. Режем как fallback.
-----------------------------------------------------------------------
-local ws = workspace
-
--- список аргументов PreloadAsync содержит CoreGui? (сравнение по ClassName —
--- устойчиво к cloneref, ссылки могут не совпасть)
-local function list_has_coregui(list)
-    if type(list) ~= "table" then return false end
-    for _, inst in ipairs(list) do
-        local ok, cn = pcall(function() return inst.ClassName end)
-        if ok and cn == "CoreGui" then return true end
-    end
-    return false
-end
-
--- фильтр FireServer: true => проглотить вызов (не пускать на сервер)
-local function fs_swallow(self, first)
-    -- ВАЖНО: не typeof() — у приманки loading_gui есть __type, дёргающий troll().
-    -- type() метаметоды не читает и для newproxy честно даёт "userdata".
-    if type(first) == "userdata" then
-        return true -- newproxy-приманка
-    end
-    if type(first) == "string" then
-        local ok, nm = pcall(function() return self.Name end)
-        if ok and nm == "loading_status" then
-            return true -- любой report-код на honeypot-канал
-        end
-        if sfind(first, "ORGANIZATION", 1, true) then
-            return true -- reparent-guard broadcast
-        end
-    end
-    return false
-end
-
--- (a) dot-форма FireServer: хук самой C-функции (oth.hook = антидетект vs isfunctionhooked)
-local base_fs
-pcall(function()
-    local t = Instance.new("RemoteEvent")
-    base_fs = t.FireServer
-    t:Destroy()
-end)
-local fs_mode = "none"
-if base_fs and oth and oth.hook then
-    local old_fs
-    old_fs = oth.hook(base_fs, function(self, ...)
-        if fs_swallow(self, (...)) then return end
-        return old_fs(self, ...)
-    end)
-    fs_mode = "oth.hook"
-elseif base_fs then
-    local old_fs
-    old_fs = hookfunction(base_fs, newcclosure(function(self, ...)
-        if fs_swallow(self, (...)) then return end
-        return old_fs(self, ...)
-    end))
-    fs_mode = "hookfunction"
-end
-
-----------------------------------------------------------------------
--- L4 — СКРЫТИЕ ЧУЖОГО UI (корень МГНОВЕННОГО чёрного экрана при MacLib).
--- В дампе НЕТ мгновенного UI-скана: игра удаляет этот скрипт (см. U0111),
--- но автор лоадера прямо признаёт "UI-reactive detector". Раз мы его не видим —
--- не ищем, а делаем GUI MacLib НЕВИДИМЫМ для любой проверки:
---   1) Фильтруем энумерацию контейнеров GetChildren/GetDescendants/
---      GetGuiObjectsAtPosition -> per-frame сканер НЕ находит наш ScreenGui.
---   2) Глушим ЖИВЫЕ foreign-коннекты ChildAdded/DescendantAdded на CoreGui и
---      gethui() -> signal-based детектор не выстреливает в момент parent'а.
--- Сигнатура GUI MacLib: ScreenGui с DisplayOrder == 2147483647 (см. GetGui).
-----------------------------------------------------------------------
-local Players = game:GetService("Players")
-local LP = Players.LocalPlayer
-
--- множество контейнеров-целей (СЫРЫЕ ссылки — те же, что и у детектора:
--- game:GetService(...) отдаёт кэшированный ref, п��этому self == совпадёт)
---[[
-    ЭТО БЫЛ ИСТОЧНИК ФРИЗА (мой баг из v4):
-      * в CONTAINERS входил PlayerGui, а игра дёргает GetDescendants/GetChildren по
-        PlayerGui буквально постоянно (UI-системы, PreloadAsync, ReactUI);
-      * filter_list на КАЖДЫЙ элемент списка гонял `for root in pairs(OURS)` с
-        inst:IsDescendantOf(root) — то есть O(n*m) C-вызовов внутри __namecall,
-        на игровом потоке, тысячи инстансов за кадр -> клиент вставал.
-
-    Теперь: фильтруем ТОЛЬКО CoreGui и gethui() (наш GUI живёт там, PlayerGui вообще
-    не трогаем), а принадлежность проверяем ОДНИМ хеш-лукапом по заранее собранному
-    множеству HIDDEN (корень + все его потомки, поддерживается через DescendantAdded).
---]]
-local CONTAINERS = {}
-pcall(function() CONTAINERS[game:GetService("CoreGui")] = true end)
-pcall(function() if gethui then CONTAINERS[gethui()] = true end end)
-
--- HIDDEN: наш GUI + ВСЕ его потомки. weak keys -> удалённое само уходит из таблицы.
-local HIDDEN    = setmetatable({}, { __mode = "k" })
-local hidden_any = false
-local MACLIB_DORDER = 2147483647
-
-local function looks_like_ours(inst)
-    local ok, isSG = pcall(function() return inst:IsA("ScreenGui") end)
-    if not (ok and isSG) then return false end
-    local ok2, d = pcall(function() return inst.DisplayOrder end)
-    return ok2 and d == MACLIB_DORDER
-end
--- помечаем корень и весь его текущий/будущий поддерев -> дальше только O(1) лукапы
-local function mark_if_ours(inst)
-    if HIDDEN[inst] then return true end
-    if not looks_like_ours(inst) then return false end
-    HIDDEN[inst], hidden_any = true, true
-    pcall(function()
-        for _, d in ipairs(inst:GetDescendants()) do HIDDEN[d] = true end
-        inst.DescendantAdded:Connect(function(d) HIDDEN[d] = true end)
-    end)
-    return true
-end
--- убрать наш GUI из результата энумерации: один хеш-лукап на элемент
-local function filter_list(list)
-    if not hidden_any or type(list) ~= "table" then return list end
-    local out, n = {}, 0
-    for i = 1, #list do
-        local inst = list[i]
-        if not HIDDEN[inst] then n += 1; out[n] = inst end
-    end
-    if n == #list then return list end -- ничего не скрыли -> отдаём оригинал
-    return out
-end
-local function is_target_container(self)
-    return CONTAINERS[self] == true
-end
-
--- глушим ЖИВЫЕ foreign-коннекты signal-детектора. Только CoreGui + gethui()
--- (PlayerGui НЕ трогаем — там легитимный UI игры). Отключаем ЛИШЬ Lua-коннекты
--- игровых скриптов: наши имеют Script == nil, CoreScript'ы — ForeignState.
-local function neuter_signals(container)
-    if not container then return 0 end
-    local n = 0
-    local sigs = {}
-    pcall(function() sigs[#sigs+1] = container.ChildAdded end)
-    pcall(function() sigs[#sigs+1] = container.DescendantAdded end)
-    for _, sig in ipairs(sigs) do
-        pcall(function()
-            for _, c in ipairs(getconnections(sig)) do
-                if c.LuaConnection and not c.ForeignState and c.Script ~= nil then
-                    if pcall(function() c:Disable() end) then n += 1 end
-                end
-            end
-        end)
-    end
-    return n
-end
-
--- (b) ЕДИНЫЙ __namecall: FireServer + PreloadAsync + ClearAllChildren
---     + GetChildren/GetDescendants/GetGuiObjectsAtPosition (скрытие UI)
-local nc_mode = "none"
-pcall(function()
-    local old_nc
-    old_nc = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-        local m = getnamecallmethod()
-        if m == "FireServer" then
-            if fs_swallow(self, (...)) then return end
-        elseif m == "PreloadAsync" then
-            -- скан интерфейса в CoreGui: не выполняем -> нет _cpr про MacLib.
-            if list_has_coregui((...)) then return end
-        elseif m == "ClearAllChildren" then
-            if self == ws then return end -- не даём стереть мир
-        elseif m == "GetChildren" or m == "GetDescendants" then
-            if is_target_container(self) then
-                return filter_list(old_nc(self, ...)) -- прячем наш GUI из энумерации
-            end
-        elseif m == "GetGuiObjectsAtPosition" then
-            return filter_list(old_nc(self, ...))     -- прячем наши GuiObject из пиксель-скана
-        end
-        return old_nc(self, ...)
-    end))
-    nc_mode = "on"
-end)
-if nc_mode ~= "on" then
-    warn("namecall hook failed — UI-hide & colon-form guards inactive")
-end
-
--- глушим живой signal-детектор ДО того, как подключим свой слушатель
-local neutered = 0
-pcall(function()
-    neutered = neutered + neuter_signals(game:GetService("CoreGui"))
-    if gethui then neutered = neutered + neuter_signals(gethui()) end
-end)
--- наш DescendantAdded: мгновенно помечаем GUI MacLib скрытым, как только он появится
-pcall(function()
-    for cont in pairs(CONTAINERS) do
-        cont.DescendantAdded:Connect(function(inst) mark_if_ours(inst) end)
-    end
-end)
-
--- (c) dot-форма fallback для PreloadAsync и ClearAllChildren
---     (на случай, если игра где-то зовёт их не через namecall)
-local preload_guard = "none"
-pcall(function()
-    local CP = cloneref and cloneref(game:GetService("ContentProvider"))
-        or game:GetService("ContentProvider")
-    local base_pre = CP.PreloadAsync
-    if type(base_pre) ~= "function" then return end
-    local old_pre
-    local function guard(self, list, ...)
-        if list_has_coregui(list) then return end
-        return old_pre(self, list, ...)
-    end
-    if oth and oth.hook then
-        old_pre = oth.hook(base_pre, guard); preload_guard = "oth.hook"
-    else
-        old_pre = hookfunction(base_pre, newcclosure(guard)); preload_guard = "hookfunction"
-    end
-end)
-
-local clear_guard = "none"
-pcall(function()
-    local probe = Instance.new("Folder")
-    local base_clear = probe.ClearAllChildren
-    probe:Destroy()
-    if type(base_clear) ~= "function" then return end
-    local old_clear
-    local function guard(self, ...)
-        if self == ws then return end
-        return old_clear(self, ...)
-    end
-    if oth and oth.hook then
-        old_clear = oth.hook(base_clear, guard); clear_guard = "oth.hook"
-    else
-        old_clear = hookfunction(base_clear, newcclosure(guard)); clear_guard = "hookfunction"
-    end
-end)
-
--- чистильщик: если troll успел раскидать BodyVelocity "lolidiot" ДО запуска обхода
-local function sweep_lolidiot()
-    local n = 0
-    pcall(function()
-        for _, d in ipairs(ws:GetDescendants()) do
-            if d.Name == "lolidiot" and d:IsA("BodyMover") then
-                pcall(function() d:Destroy() end)
-                n += 1
-            end
-        end
-    end)
-    return n
-end
-
-----------------------------------------------------------------------
--- L3 — LogService.MessageOut honeypot (logscan _ls). Глушим НЕ-наши коннекты.
--- В цикле: игра регистрирует новые обработчики на спавне/смене карты.
-----------------------------------------------------------------------
-local LogSvc
-pcall(function()
-    LogSvc = cloneref and cloneref(game:GetService("LogService")) or game:GetService("LogService")
-end)
-local function patch_logscan()
-    if not LogSvc then return 0 end
-    local n = 0
-    pcall(function()
-        for _, c in ipairs(getconnections(LogSvc.MessageOut)) do
-            local mine = isourthread and c.Thread and isourthread(c.Thread)
-            local live = true
-            local okE, en = pcall(function() return c.Enabled end)
-            if okE and en == false then live = false end
-            if not mine and live then
-                if pcall(function() c:Disable() end) then n += 1 end
-            end
-        end
-    end)
-    return n
-end
-patch_logscan()
-
-----------------------------------------------------------------------
--- L5 — вторая система детекта (FirstPersonController_extend, ~стр.680-800).
--- secondary_replication_timer каждые ~5с вшивает детект-пакеты в
--- replication:FireServer. Дропать нельзя (сломается движение) -> глушим таймер:
---   Timer.expired() = (next_time < get_time())  -> next_time=huge => НИКОГДА.
--- Убивает packet 1 (скан PlayerGui), 2 (bodymovers на torso), 4 (вес),
--- 5/6 (velocity), 7 (rpm>1500), 8 (dirty_properties), 9 (_G.actor_started), 10 (stop).
--- Packet 3 (torso_hitbox) вне таймера -> просто не трогаем хи��бокс.
--- Контроллер пересоздаётся на респавне -> переставляем в цикле.
-----------------------------------------------------------------------
-local HUGE = math.huge
-local sec_patched = 0
-local function patch_secondary()
-    local ok, found = pcall(filtergc, "table", { Keys = { "secondary_replication_timer" } }, false)
-    if not ok or type(found) ~= "table" then return end
-    for _, ctrl in ipairs(found) do
-        local t = rawget(ctrl, "secondary_replication_timer")
-        if type(t) == "table" and rawget(t, "next_time") ~= HUGE then
-            pcall(function() t.next_time = HUGE; t.timeout = HUGE end)
-            sec_patched += 1
-        end
-    end
-end
-pcall(function() if _G.actor_started then _G.actor_started = nil end end)
-pcall(patch_secondary)
-sweep_lolidiot()
-
--- фоновый резервный цикл (БЕЗ вывода в консоль — тихо держит оборону).
--- Детектор/таймеры пересоздаются на респавне и смене карты -> переставляем.
-task.spawn(function()
-    while true do
-        task.wait(2)
-        pcall(patch_secondary)
-        patch_logscan()
-        if rawget(_G, "actor_started") then pcall(function() _G.actor_started = nil end) end
-        sweep_lolidiot()
-        -- ВАЖНО: kill_traps здесь БОЛЬШЕ НЕ ЗОВЁМ. require кешируется, новых
-        -- getenv-замыканий не появляется, а filtergc — stop-the-world обход GC:
-        -- вечный вызов ломал filtergc в SA (пустой список сущностей -> нет цели).
-        -- Трапы добивает одноразовый retry-цикл выше, по traps_done.
-        -- L4: глушим заново переподключённые signal-детекторы + подхватываем
-        -- новые контейнеры/GUI после респавна.
-        pcall(function()
-            neuter_signals(game:GetService("CoreGui"))
-            if gethui then neuter_signals(gethui()) end
-        end)
-        pcall(function()
-            for cont in pairs(CONTAINERS) do
-                for _, ch in ipairs(cont:GetChildren()) do mark_if_ours(ch) end
-            end
-        end)
-    end
-end)
-
-----------------------------------------------------------------------
---  ИТОГ  —  один короткий статус. Всё зелёное => "bypass done".
-----------------------------------------------------------------------
--- L4 требует getconnections для глушения signal-детектора
-if type(getconnections) ~= "function" then
-    warn("no getconnections — signal-detector not neutralized (UI-hide still on)")
-end
--- L1: трапы обезврежены через scrub (rconsoleprint=false) независимо от filtergc.
--- Сообщаем только если ДАЖЕ scrub не смог — тогда фриз реально возможен.
-if rconsoleprint ~= false and type(rconsoleprint) == "function" then
-    warn("freeze traps: rconsoleprint still visible — freeze possible")
-end
-
-if #warns == 0 then
-    status("bypass done")
-else
-    -- арт уже нарисован пр�� init; печатаем только строки статуса
-    status("bypass done (with warnings):")
-    for _, w in ipairs(warns) do status("  warn: " .. w) end
+    set_shared(key, prev)
 end
 
 --======================================================================
---  LOADER MODULE (Syllinse) — без UI. stop() намеренно НЕ снимает хуки:
---  un-hook пере-взвёл бы freeze-трапы и report-канал.
+--  ПРИМЕНЕНИЕ
+--======================================================================
+local function apply()
+    applied = 0
+
+    --[[ ДЫМ — только ОДИН безопасный параметр.
+         update_smokes:136 делает
+             math.clamp(cfg_smoke_fade_out_start, cfg_smoke_fade_in_end, 0.99)
+         поэтому fade_in_end = 1 даёт min(1) > max(0.99) -> Luau бросает ошибку
+         каждый кадр (ClientScheduler ловит её xpcall'ом и спамит warn, дым при
+         этом вообще не обновляется). emit_rate = 0 идёт в 1/v54 на строке 172.
+         Прозрачность даёт update_smokes:276 — v94 = clamp(v93,0,1) * max_opacity,
+         так что max_opacity = 0 достаточно и ничего не ломает. ]]
+    set_shared("cfg_smoke_max_opacity", CFG.SeeThroughSmoke and 0 or 0.55)
+    -- вернуть дефолты игры, если их испортила предыдущая версия скрипта
+    set_shared("cfg_smoke_fade_in_end", 0.01)
+    set_shared("cfg_smoke_fade_out_start", 0.8)
+    set_shared("cfg_smoke_emit_rate", 11)
+
+    if CFG.NoSuppression then
+        set_shared("plr_suppression", false)
+    end
+
+    --[[ ══ ЭТО И БЫЛ ЧЁРНЫЙ ЭКРАН (проверено по дампу) ══════════════════
+         weather:61 — `if SHARED_STATE.dbg_disable_weather.value then return nil end`
+         стоит в САМОМ НАЧАЛЕ heartbeat-а, а этот heartbeat — ЕДИНСТВЕННОЕ, что
+         вообще ведёт освещение карты:
+             :81  Lighting.ClockTime = v20
+             :128 Lighting[i] = math.map(...)      (пресеты освещения)
+             :130 Lighting[i] = read_color_data(...)
+             :158 Lighting.OutdoorAmbient = ...
+             + VOLUMIKA (объёмный свет/туман)
+         Ставя флаг в true, мы навсегда останавливали драйвер освещения, и сцена
+         оставалась неинициализированной = ЧЁРНЫЙ ЭКРАН. Флаг НЕ пишем никогда;
+         наоборот, форсим false, если его успела выставить прошлая версия.
+
+         Вместо этого «вечный день» делаем ЛЕГАЛЬНЫМИ входами того же heartbeat-а
+         (weather:79-81):  ClockTime = (u5 + sv_time_offset) % 24
+             sv_day_cycle_speed = 0  -> время перестаёт бежать (день не сменится);
+             sv_time_offset       -> сдвигаем так, чтобы ClockTime стал ~12:00.
+         Нужный сдвиг вычисляем из уже отрисованного Lighting.ClockTime, поэтому
+         внутреннее u5 знать не требуется. Драйвер остаётся живым -> свет есть. ]]
+    set_shared("dbg_disable_weather", false)
+    if CFG.DisableWeather then
+        set_shared("sv_day_cycle_speed", 0)
+        pcall(function()
+            local Lighting = game:GetService("Lighting")
+            local cur = Lighting.ClockTime          -- = (u5 + offset) % 24
+            local off = SHARED and SHARED.sv_time_offset
+                        and SHARED.sv_time_offset.value or 0
+            -- сдвиг до полудня; % 24 держит значение в допустимом диапазоне
+            set_shared("sv_time_offset", (off + (12 - cur)) % 24)
+        end)
+    else
+        -- тумблер выключили — возвращаем ход суток, каким он был до нас
+        restore_shared("sv_day_cycle_speed")
+        restore_shared("sv_time_offset")
+    end
+
+    set_shared("dbg_projectile", CFG.ShowProjectiles and true or false)
+    set_shared("dbg_show_shot_trajectory", CFG.ShowShotVector and true or false)
+    set_shared("dbg_char_gizmos", CFG.ShowCharGizmos and true or false)
+
+    if CFG.InstantSound then
+        set_shared("sv_sound_speed", CFG.SoundSpeed)
+    end
+
+    if CFG.SteadyAim then
+        set_shared("plr_recoil", 0)
+        set_shared("plr_stamina_shake_multiplier", 0)
+    end
+
+    if CFG.InfStamina then
+        -- расходы в ноль (максимум и полоску НЕ трогаем, см. комментарий выше)
+        set_shared("plr_stamina_run_drain", 0)
+        set_shared("plr_stamina_jump_drain", 0)
+        set_shared("plr_stamina_lean_drain", 0)
+        set_shared("plr_vault_stamina_drain", 0)
+        set_shared("plr_arm_stamina_drain", 0)
+        set_shared("plr_arm_stamina_drain_hold_breath", 0)
+        -- регенерация с запасом: добирает нефлаговый расход из FPC:751
+        set_shared("plr_stamina_regen", 60)
+        set_shared("plr_stamina_crouch_regen", 60)
+        set_shared("plr_arm_stamina_regen", 60)
+        set_shared("plr_arm_stamina_regen_crouch", 60)
+    end
+
+    if CFG.NoLensFlare then
+        set_shared("plr_lens_flare", false)
+    end
+
+    if CFG.BrightNVG then
+        set_shared("plr_nv_color", Color3.fromRGB(255, 255, 255))
+    end
+
+    if CFG.AimInBushes then
+        set_shared("plr_aim_in_bushes", false)
+    end
+
+    if CFG.NoDrown then
+        set_shared("plr_drown_time", CFG.DrownTime)
+    end
+end
+
+apply()
+
+if CFG.KeepAlive then
+    task.spawn(function()
+        while running do
+            task.wait(CFG.Interval)
+            pcall(apply)
+        end
+    end)
+end
+
+--======================================================================
+--  ДИАГНОСТИКА / ВЫГРУЗКА
+--======================================================================
+DLV.debug = function()
+    local s = ("shared=%s applied=%d genv-traps=%d")
+        :format(tostring(SHARED ~= nil), applied, genvKilled)
+    log(s)
+    return s
+end
+
+DLV.unload = function()
+    running = false
+    for key in pairs(original) do
+        pcall(restore_shared, key)
+    end
+    if getgenv().DLV == DLV then
+        getgenv().DLV = nil
+    end
+    log("unloaded (original values restored)")
+end
+
+if not SHARED then
+    log("ERROR: could not get SHARED_STATE - run after the game has loaded")
+else
+    log(("armed | flags set: %d | genv-traps: %d"):format(applied, genvKilled))
+    log("see-thru-smoke: " .. tostring(CFG.SeeThroughSmoke) ..
+        " | no-suppression: " .. tostring(CFG.NoSuppression) ..
+        " | no-weather: " .. tostring(CFG.DisableWeather))
+    log("NOT touching: velocity / velocity_drop / rpm / properties = packets 5/6/7/8")
+end
+
+--======================================================================
+--  LOADER MODULE  (Syllinse Project / MacLib)
 --======================================================================
 return {
-    start = function() end,
-    stop  = function() end,
+    -- everything starts OFF and is applied immediately
+    start = function()
+        CFG.SeeThroughSmoke, CFG.NoSuppression, CFG.DisableWeather = false, false, false
+        CFG.ShowProjectiles, CFG.ShowShotVector, CFG.ShowCharGizmos = false, false, false
+        CFG.InstantSound, CFG.SteadyAim, CFG.InfStamina = false, false, false
+        CFG.NoLensFlare, CFG.BrightNVG, CFG.AimInBushes, CFG.NoDrown = false, false, false, false
+        pcall(apply)
+    end,
+
+    stop = function()
+        if DLV and type(DLV.unload) == "function" then pcall(DLV.unload) end
+    end,
+
+    buildUI = function(ctx)
+        local ready = false
+        task.defer(function() ready = true end)
+        local function note(t, b) if ready then pcall(ctx.notify, t, b) end end
+
+        -- every toggle re-applies immediately: these are plain state flags
+        local function bool(sec, name, o)
+            sec:Toggle({ Name = name, Default = o.Default == true,
+                Callback = function(v)
+                    o.set(v and true or false)
+                    pcall(apply)
+                    note(name, v and "Enabled" or "Disabled")
+                end }, ctx.flag(o.Flag))
+            if o.Desc then sec:SubLabel({ Text = o.Desc }) end
+        end
+
+        local function slider(sec, o)
+            sec:Slider({ Name = o.Name, Default = o.Default, Minimum = o.Min, Maximum = o.Max,
+                Precision = o.Precision or 0, Suffix = o.Suffix,
+                Callback = function(v) o.Callback(v); pcall(apply) end }, ctx.flag(o.Flag))
+            if o.Desc then sec:SubLabel({ Text = o.Desc }) end
+        end
+
+        --==============================================================
+        -- TAB: VISUALS  (world flags; ESP sections come from the suite)
+        --==============================================================
+        -- master switch + empty keybind, one per feature section
+        local function feature(sec, o)
+            local guard, el = false, nil
+            local function commit(v)
+                v = v and true or false
+                o.set(v)
+                pcall(apply)
+                note(o.Title, v and "Enabled" or "Disabled")
+                guard = true
+                if el then pcall(function() el:UpdateState(v) end) end
+                guard = false
+            end
+            el = sec:Toggle({ Name = "Enabled", Default = false,
+                Callback = function(v) if not guard then commit(v) end end },
+                ctx.flag(o.Flag))
+            if o.Desc then sec:SubLabel({ Text = o.Desc }) end
+            ctx.keybind(sec, { Name = "Keybind", Flag = ctx.flag(o.Flag .. "_KB"),
+                Toggle = function() commit(not o.get()) end })
+        end
+
+        --==============================================================
+        -- TAB: VISUALS  (world flags; ESP sections come from the suite)
+        --==============================================================
+        local V = ctx.tabs.Visuals
+
+        local w1 = V:Section({ Side = "Right" })
+        w1:Header({ Name = "See Through Smoke" })
+        feature(w1, { Title = "See Through Smoke", Flag = "WD_Smoke",
+            get = function() return CFG.SeeThroughSmoke end,
+            set = function(v) CFG.SeeThroughSmoke = v end,
+            Desc = "smoke opacity 0 = enemy smokes stop working on you" })
+
+        local w2 = V:Section({ Side = "Right" })
+        w2:Header({ Name = "Disable Weather" })
+        feature(w2, { Title = "Disable Weather", Flag = "WD_Weather",
+            get = function() return CFG.DisableWeather end,
+            set = function(v) CFG.DisableWeather = v end,
+            Desc = "flat bright lighting instead of night, fog and rain" })
+
+        local w3 = V:Section({ Side = "Right" })
+        w3:Header({ Name = "No Lens Flare" })
+        feature(w3, { Title = "No Lens Flare", Flag = "WD_Flare",
+            get = function() return CFG.NoLensFlare end,
+            set = function(v) CFG.NoLensFlare = v end,
+            Desc = "no blinding from enemy flashlights and lasers" })
+
+        local w4 = V:Section({ Side = "Right" })
+        w4:Header({ Name = "Bright NVG" })
+        feature(w4, { Title = "Bright NVG", Flag = "WD_NVG",
+            get = function() return CFG.BrightNVG end,
+            set = function(v) CFG.BrightNVG = v end,
+            Desc = "white night vision instead of green" })
+
+        --==============================================================
+        -- TAB: MISC
+        --==============================================================
+        local X = ctx.tabs.Misc
+
+        local x1 = X:Section({ Side = "Left" })
+        x1:Header({ Name = "No Suppression" })
+        feature(x1, { Title = "No Suppression", Flag = "MS_NoSupp",
+            get = function() return CFG.NoSuppression end,
+            set = function(v) CFG.NoSuppression = v end,
+            Desc = "no blur or aim shake from nearby bullets" })
+
+        local x2 = X:Section({ Side = "Right" })
+        x2:Header({ Name = "Steady Aim" })
+        feature(x2, { Title = "Steady Aim", Flag = "MS_Steady",
+            get = function() return CFG.SteadyAim end,
+            set = function(v) CFG.SteadyAim = v end,
+            Desc = "zero camera recoil and fatigue shake" })
+
+        local x3 = X:Section({ Side = "Left" })
+        x3:Header({ Name = "Infinite Stamina" })
+        feature(x3, { Title = "Infinite Stamina", Flag = "MS_InfStam",
+            get = function() return CFG.InfStamina end,
+            set = function(v) CFG.InfStamina = v end,
+            Desc = "zeroes every stamina drain and raises regen" })
+
+        local x4 = X:Section({ Side = "Right" })
+        x4:Header({ Name = "Aim In Bushes" })
+        feature(x4, { Title = "Aim In Bushes", Flag = "MS_Bushes",
+            get = function() return CFG.AimInBushes end,
+            set = function(v) CFG.AimInBushes = v end,
+            Desc = "the bush aim block is client-only" })
+
+        local x5 = X:Section({ Side = "Left" })
+        x5:Header({ Name = "Instant Sound" })
+        feature(x5, { Title = "Instant Sound", Flag = "MS_Sound",
+            get = function() return CFG.InstantSound end,
+            set = function(v) CFG.InstantSound = v end,
+            Desc = "removes the distance delay on gunshots" })
+        slider(x5, { Name = "Sound Speed", Flag = "MS_SoundSpd", Default = 20000,
+            Min = 1120, Max = 40000,
+            Callback = function(v) CFG.SoundSpeed = v end,
+            Desc = "game default is 1120" })
+
+        local x6 = X:Section({ Side = "Right" })
+        x6:Header({ Name = "No Drown" })
+        feature(x6, { Title = "No Drown", Flag = "MS_NoDrown",
+            get = function() return CFG.NoDrown end,
+            set = function(v) CFG.NoDrown = v end,
+            Desc = "keeps the breath timer topped up" })
+
+        --==============================================================
+        -- TAB: DEBUG  (created by the loader)
+        --==============================================================
+        local D = ctx.tabs.Debug
+
+        local d1 = D:Section({ Side = "Right" })
+        d1:Header({ Name = "Show Projectiles" })
+        feature(d1, { Title = "Show Projectiles", Flag = "WD_Proj",
+            get = function() return CFG.ShowProjectiles end,
+            set = function(v) CFG.ShowProjectiles = v end,
+            Desc = "all bullet paths, incoming ones too" })
+
+        local d2 = D:Section({ Side = "Left" })
+        d2:Header({ Name = "Show Shot Vector" })
+        feature(d2, { Title = "Show Shot Vector", Flag = "WD_ShotVec",
+            get = function() return CFG.ShowShotVector end,
+            set = function(v) CFG.ShowShotVector = v end,
+            Desc = "green = barrel, red = real direction with spread" })
+
+        local d3 = D:Section({ Side = "Right" })
+        d3:Header({ Name = "Show Hitboxes" })
+        feature(d3, { Title = "Show Hitboxes", Flag = "WD_Gizmos",
+            get = function() return CFG.ShowCharGizmos end,
+            set = function(v) CFG.ShowCharGizmos = v end,
+            Desc = "character collision cylinders" })
+    end,
 }
