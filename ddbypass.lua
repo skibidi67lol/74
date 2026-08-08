@@ -30,9 +30,9 @@
 --]]
 
 if getgenv().__dl_bypass_v4 then
-    -- уже активен — просто перерисуем баннер и выйдем
-    local f = getgenv().__dl_bypass_banner
-    if f then pcall(f, "already") end
+    -- уже активен — НЕ рисуем арт заново, только короткая строка статуса
+    local s = getgenv().__dl_bypass_status
+    if s then pcall(s, "bypass already active") end
     return
 end
 getgenv().__dl_bypass_v4 = true
@@ -58,28 +58,28 @@ end
 local function line(s) raw_out(tostring(s) .. "\n") end
 
 local BANNER = {
-    [[ ______     __  __     __         __         __     __   __     ______     ______    ]],
-    [[/\  ___\   /\ \_\ \   /\ \       /\ \       /\ \   /\ "-.\ \   /\  ___\   /\  ___\   ]],
-    [[\ \___  \  \ \____ \  \ \ \____  \ \ \____  \ \ \  \ \ \-.  \  \ \___  \  \ \  __\   ]],
-    [[ \/\_____\  \/\_____\  \ \_____\  \ \_____\  \ \_\  \ \_\\"\_\  \/\_____\  \ \_____\ ]],
-    [[  \/_____/   \/_____/   \/_____/   \/_____/   \/_/   \/_/ \/_/   \/_____/   \/_____/ ]],
-    [[                                                                                     ]],
+    [[ .oooooo..o             oooo  oooo   o8o                                 ]],
+    [[d8P'    `Y8             `888  `888   `"'                                 ]],
+    [[Y88bo.      oooo    ooo  888   888  oooo  ooo. .oo.    .oooo.o  .ooooo.  ]],
+    [[ `"Y8888o.   `88.  .8'   888   888  `888  `888P"Y88b  d88(  "8 d88' `88b ]],
+    [[     `"Y88b   `88..8'    888   888   888   888   888  `"Y88b.  888ooo888 ]],
+    [[oo     .d8P    `888'     888   888   888   888   888  o.  )88b 888    .o ]],
+    [[8""88888P'      .8'     o888o o888o o888o o888o o888o 8""888P' `Y8bod8P' ]],
+    [[            .o..P'                                                       ]],
+    [[            `Y8P'                                                        ]],
 }
-local function banner(state)
+-- ASCII-арт печатаем РОВНО ОДИН РАЗ за сессию (глобальный флаг).
+local function banner_art()
+    if rawget(genv, "__dl_banner_shown") then return end
+    pcall(rawset, genv, "__dl_banner_shown", true)
     for _, l in ipairs(BANNER) do line(l) end
-    if state == "already" then
-        line("bypass already active")
-    elseif state == "init" then
-        line("bypass init")
-    elseif state == "done" then
-        line("bypass done")
-    elseif state then
-        line("bypass " .. state)
-    end
 end
-pcall(rawset, genv, "__dl_bypass_banner", banner)
+-- статус-строки — простой текст под артом (init / done / warn / already)
+local function status(msg) line(tostring(msg)) end
+pcall(rawset, genv, "__dl_bypass_status", status)
 
-banner("init")
+banner_art()
+status("bypass init")
 
 --// общий C-noop для замен (newcclosure = антидетект islclosure/isexecutorclosure)
 local NOOP = newcclosure(function() end)
@@ -148,7 +148,7 @@ pcall(scrub, renv)
 -- Ловим ДВА пути диспетчеризации:
 --   (a) dot-форма  self.Method(self, x)  -> хук function-value (oth.hook / hookfunction)
 --   (b) colon-форма self:Method(x)       -> __namecall  (в loading_gui именно так!)
--- Через один __namecall закрываем разом:
+-- Через один __namecall закрываем р��зом:
 --   FireServer      : report-коды (_genv/_i/_ri/_rt/_rq/_ls/_cpr/"1"), userdata-приманка,
 --                     reparent-broadcast "THE ORGANIZATION HAS FOUND US"
 --   PreloadAsync    : скан {CoreGui} -> ЭТО источник _cpr про MacLib. Режем в корне.
@@ -358,11 +358,11 @@ if nc_mode ~= "on" then
 end
 
 if #warns == 0 then
-    banner("done")
+    status("bypass done")
 else
-    -- баннер уже нарисован при init; печатаем только строки статуса
-    line("bypass done (with warnings):")
-    for _, w in ipairs(warns) do line("  warn: " .. w) end
+    -- арт уже нарисован при init; печатаем только строки статуса
+    status("bypass done (with warnings):")
+    for _, w in ipairs(warns) do status("  warn: " .. w) end
 end
 
 --======================================================================
